@@ -9,11 +9,17 @@ import { collectTools } from "./plugins";
 import type { ReminderPayload } from "./plugins/reminders";
 import type { VerifiedChangePayload } from "./plugins/selfdev";
 import { getDefaultBranch, openPullRequest, type GitHubConfig } from "./github";
+import { formatForTelegram, type TelegramParseMode } from "./format";
 
 // Cap noisy command output before it goes into a chat message.
 function truncate(text: string, max = 1500): string {
   const t = text.trim();
   return t.length > max ? `${t.slice(0, max)}\n… (truncated)` : t;
+}
+
+// Wrap command output in a fenced block so format.ts renders it as <pre>.
+function codeBlock(text: string): string {
+  return `\`\`\`\n${truncate(text)}\n\`\`\``;
 }
 
 // Single-quote a string for `sh -c` so titles with spaces/quotes are safe.
@@ -218,8 +224,25 @@ export class TellboyAgent extends Think<Env> {
     }
     // providerThreadId may encode a forum topic as "<chatId>:<threadId>".
     const [chatId, threadId] = stored.split(":");
+    const thread = threadId ? Number(threadId) : undefined;
+
+    // Prefer HTML (format.ts escapes safely and renders markdown/code blocks).
+    // If Telegram rejects the HTML for any reason, fall back to plain text so a
+    // formatting edge case can never silently drop the message.
+    const html = formatForTelegram(text);
+    const delivered = await this.sendTelegram(chatId, thread, html.text, html.parseMode);
+    if (!delivered) await this.sendTelegram(chatId, thread, text);
+  }
+
+  private async sendTelegram(
+    chatId: string,
+    threadId: number | undefined,
+    text: string,
+    parseMode?: TelegramParseMode,
+  ): Promise<boolean> {
     const body: Record<string, unknown> = { chat_id: chatId, text };
-    if (threadId) body.message_thread_id = Number(threadId);
+    if (threadId !== undefined) body.message_thread_id = threadId;
+    if (parseMode) body.parse_mode = parseMode;
 
     const res = await fetch(
       `https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
@@ -230,12 +253,9 @@ export class TellboyAgent extends Think<Env> {
       },
     );
     if (!res.ok) {
-      console.error(
-        "tellboy: proactive Telegram send failed",
-        res.status,
-        await res.text(),
-      );
+      console.error("tellboy: Telegram send failed", res.status, await res.text());
     }
+    return res.ok;
   }
 
   // Scheduler callback for the selfdev `propose_change` tool. Runs OFF the chat
@@ -290,7 +310,7 @@ export class TellboyAgent extends Think<Env> {
       });
       if (!install.success) {
         await this.notifyUser(
-          `I couldn't verify the change — \`pnpm install\` failed:\n${truncate(install.stderr || install.stdout)}`,
+          `I couldn't verify the change — \`pnpm install\` failed:\n${codeBlock(install.stderr || install.stdout)}`,
         );
         return;
       }
@@ -300,7 +320,7 @@ export class TellboyAgent extends Think<Env> {
       });
       if (!check.success) {
         await this.notifyUser(
-          `The change does NOT pass \`pnpm typecheck\`, so I did not open a PR. Errors:\n${truncate(`${check.stdout}\n${check.stderr}`)}`,
+          `The change does NOT pass \`pnpm typecheck\`, so I did not open a PR. Errors:\n${codeBlock(`${check.stdout}\n${check.stderr}`)}`,
         );
         return;
       }
@@ -324,7 +344,7 @@ export class TellboyAgent extends Think<Env> {
       });
       if (!push.success) {
         await this.notifyUser(
-          `Verified, but the push failed:\n${truncate(push.stderr)}`,
+          `Verified, but the push failed:\n${codeBlock(push.stderr)}`,
         );
         return;
       }
