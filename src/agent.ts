@@ -131,14 +131,23 @@ export class TellboyAgent extends Think<Env> {
   // it here rather than as a cached context block so it stays fresh each turn.
   // The trade-off is a small prefix-cache cost — acceptable for a personal
   // assistant, and the live conversation below the system prompt still caches.
-  async beforeTurn(ctx: TurnContext): Promise<TurnConfig> {
-    // Capture the Telegram chat id from the active messenger turn and persist
-    // it durably. Proactive sends (reminders, selfdev results) fire from an
-    // alarm with no messenger context, so they read this stored id to deliver
-    // directly via the Telegram API. Same DO instance owns the turn and the
-    // alarm, so the stored value is always the right chat.
-    const chatId = this.getMessengerContext()?.thread.providerThreadId;
-    if (chatId) await this.ctx.storage.put(TG_CHAT_KEY, chatId);
+  beforeTurn(ctx: TurnContext): TurnConfig {
+    // Best-effort capture of the Telegram chat id for proactive sends
+    // (reminders, selfdev results read it from storage when they fire from an
+    // alarm with no messenger context). This MUST NOT block or fail the turn:
+    // an awaited storage write here can stall the reply turn (no stream chunks
+    // → the stall watchdog aborts and chatRecovery retries forever). So it is
+    // synchronous and fire-and-forget, with errors swallowed.
+    try {
+      const chatId = this.getMessengerContext()?.thread.providerThreadId;
+      if (chatId) {
+        void this.ctx.storage
+          .put(TG_CHAT_KEY, chatId)
+          .catch((e) => console.error("tellboy: chat-id capture failed", e));
+      }
+    } catch (e) {
+      console.error("tellboy: beforeTurn capture error", e);
+    }
 
     return { system: `${ctx.system}\n\nCurrent time (UTC): ${new Date().toISOString()}.` };
   }
