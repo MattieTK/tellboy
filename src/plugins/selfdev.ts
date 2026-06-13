@@ -104,6 +104,19 @@ export const selfdevPlugin: Plugin = {
             .describe("Files to create or overwrite."),
         }),
         execute: async ({ title, body, files }) => {
+          // The bot must not be able to weaken its own deploy machinery via a
+          // PR. These paths hold the CI workflow and the deploy proxy; changes
+          // to them go through humans only, not the self-edit flow.
+          const PROTECTED = [".github/", "deployer/"];
+          const blocked = files
+            .map((f) => f.path)
+            .filter((p) => PROTECTED.some((prefix) => p.startsWith(prefix)));
+          if (blocked.length > 0) {
+            return {
+              error: `These paths are protected and cannot be changed by the bot: ${blocked.join(", ")}`,
+            };
+          }
+
           const payload: VerifiedChangePayload = { title, body, files };
           // Run off the chat turn: clone + install + typecheck is too slow to
           // block a reply. The scheduler fires (~immediately) on the same DO,

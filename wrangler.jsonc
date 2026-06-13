@@ -28,6 +28,7 @@
     "MODEL_ID": "@cf/moonshotai/kimi-k2.6",
     "AI_GATEWAY_ID": "default",
     "TELEGRAM_BOT_USERNAME": "TellboiBot",
-    "GITHUB_REPO": "MattieTK/tellboy"
+    "GITHUB_REPO": "MattieTK/tellboy",
+    "DEPLOY_URL": "https://tellboy-deployer.tk.workers.dev"
   }
 }

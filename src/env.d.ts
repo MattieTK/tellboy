@@ -29,4 +29,11 @@ interface Env {
    * Inline import keeps this file an ambient global augmentation.
    */
   Sandbox: DurableObjectNamespace<import("@cloudflare/sandbox").Sandbox>;
+
+  /** URL of the tellboy-deployer Worker (the narrow deploy proxy). */
+  DEPLOY_URL?: string;
+  /** Opaque capability secret accepted by the deployer's /deploy endpoint. */
+  DEPLOY_SECRET?: string;
+  /** Explicit on/off override for the deploy plugin (e.g. "true"/"false"). */
+  ENABLE_DEPLOY?: string;
 }
