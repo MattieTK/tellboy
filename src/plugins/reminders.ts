@@ -9,6 +9,12 @@ import type { TellboyAgent } from "../agent";
  */
 export interface ReminderPayload {
   message: string;
+  /**
+   * Telegram chat id captured when the reminder was set. Carried in the
+   * schedule payload so delivery doesn't depend on where the alarm fires or on
+   * shared storage — the firing callback sends straight to this chat.
+   */
+  chatId?: string;
 }
 
 /**
@@ -81,7 +87,10 @@ export const remindersPlugin: Plugin = {
             when = date;
           }
 
-          const payload: ReminderPayload = { message };
+          // Capture the chat id now, while the messenger context is live.
+          const chatId =
+            agent.getMessengerContext()?.thread.providerThreadId;
+          const payload: ReminderPayload = { message, chatId };
           const schedule = await agent.schedule(when, REMINDER_CALLBACK, payload);
           return {
             ok: true,

@@ -217,7 +217,11 @@ export class TellboyAgent extends Think<Env> {
   // this code runs on the per-thread Durable Object that owns the alarm, so it
   // already holds that conversation's messenger binding.
   async deliverReminder(payload: ReminderPayload): Promise<void> {
-    await this.notifyUser(`⏰ Reminder: ${payload.message}`);
+    console.log(
+      "tellboy: deliverReminder fired",
+      JSON.stringify({ hasChatId: payload.chatId !== undefined }),
+    );
+    await this.notifyUser(`⏰ Reminder: ${payload.message}`, payload.chatId);
   }
 
   // Proactively message the user via the Telegram API directly. Used by the
@@ -225,22 +229,28 @@ export class TellboyAgent extends Think<Env> {
   // with no live messenger turn — so we cannot stream a reply through Think's
   // inbound delivery path. We send straight to the stored chat id instead,
   // which is the reliable provider-explicit way to push an unprompted message.
-  private async notifyUser(text: string): Promise<void> {
-    const stored = await this.ctx.storage.get<string>(TG_CHAT_KEY);
-    if (!stored) {
-      console.error("tellboy: no stored chat id; cannot deliver proactive message");
+  private async notifyUser(text: string, chatId?: string): Promise<void> {
+    // Prefer the chat id carried in the schedule payload (captured when the
+    // messenger context was live); fall back to the stored id.
+    const target = chatId ?? (await this.ctx.storage.get<string>(TG_CHAT_KEY));
+    if (!target) {
+      console.error("tellboy: no chat id (payload or stored); cannot deliver proactive message");
       return;
     }
     // providerThreadId may encode a forum topic as "<chatId>:<threadId>".
-    const [chatId, threadId] = stored.split(":");
+    const [chat, threadId] = target.split(":");
     const thread = threadId ? Number(threadId) : undefined;
+    console.log(
+      "tellboy: proactive send",
+      JSON.stringify({ chat, thread, fromPayload: chatId !== undefined }),
+    );
 
     // Prefer HTML (format.ts escapes safely and renders markdown/code blocks).
     // If Telegram rejects the HTML for any reason, fall back to plain text so a
     // formatting edge case can never silently drop the message.
     const html = formatForTelegram(text);
-    const delivered = await this.sendTelegram(chatId, thread, html.text, html.parseMode);
-    if (!delivered) await this.sendTelegram(chatId, thread, text);
+    const delivered = await this.sendTelegram(chat, thread, html.text, html.parseMode);
+    if (!delivered) await this.sendTelegram(chat, thread, text);
   }
 
   private async sendTelegram(
@@ -274,12 +284,14 @@ export class TellboyAgent extends Think<Env> {
   //
   // PR-only by design — no merge — so a human review stays the gate.
   async runVerifiedChange(payload: VerifiedChangePayload): Promise<void> {
+    // Deliver results to the chat captured when the change was proposed.
+    const notify = (t: string) => this.notifyUser(t, payload.chatId);
     const cfg: GitHubConfig = {
       token: this.env.GITHUB_TOKEN ?? "",
       repo: this.env.GITHUB_REPO ?? "",
     };
     if (!cfg.token || !cfg.repo) {
-      await this.notifyUser("I couldn't verify that change — GitHub isn't configured.");
+      await notify("I couldn't verify that change — GitHub isn't configured.");
       return;
     }
 
@@ -318,7 +330,7 @@ export class TellboyAgent extends Think<Env> {
         timeout: 240_000,
       });
       if (!install.success) {
-        await this.notifyUser(
+        await notify(
           `I couldn't verify the change — \`pnpm install\` failed:\n${codeBlock(install.stderr || install.stdout)}`,
         );
         return;
@@ -328,7 +340,7 @@ export class TellboyAgent extends Think<Env> {
         timeout: 180_000,
       });
       if (!check.success) {
-        await this.notifyUser(
+        await notify(
           `The change does NOT pass \`pnpm typecheck\`, so I did not open a PR. Errors:\n${codeBlock(`${check.stdout}\n${check.stderr}`)}`,
         );
         return;
@@ -343,7 +355,7 @@ export class TellboyAgent extends Think<Env> {
         { cwd: repoDir },
       );
       if (!commit.success) {
-        await this.notifyUser(
+        await notify(
           "Nothing to commit — the proposed files match the current code.",
         );
         return;
@@ -352,7 +364,7 @@ export class TellboyAgent extends Think<Env> {
         cwd: repoDir,
       });
       if (!push.success) {
-        await this.notifyUser(
+        await notify(
           `Verified, but the push failed:\n${codeBlock(push.stderr)}`,
         );
         return;
@@ -366,16 +378,16 @@ export class TellboyAgent extends Think<Env> {
         base,
       });
       if ("error" in pr) {
-        await this.notifyUser(
+        await notify(
           `Verified and pushed \`${branch}\`, but opening the PR failed: ${pr.error}`,
         );
         return;
       }
-      await this.notifyUser(
+      await notify(
         `Verified (\`pnpm typecheck\` passed) and opened a PR for your review: ${pr.url}`,
       );
     } catch (err) {
-      await this.notifyUser(
+      await notify(
         `That change errored during verification: ${String(err instanceof Error ? err.message : err)}`,
       );
     }

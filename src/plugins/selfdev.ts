@@ -18,6 +18,8 @@ export interface VerifiedChangePayload {
   title: string;
   body: string;
   files: Array<{ path: string; content: string }>;
+  /** Telegram chat id captured at request time, for the proactive result. */
+  chatId?: string;
 }
 
 // Method on TellboyAgent that the scheduler invokes to run the verification +
@@ -117,7 +119,8 @@ export const selfdevPlugin: Plugin = {
             };
           }
 
-          const payload: VerifiedChangePayload = { title, body, files };
+          const chatId = agent.getMessengerContext()?.thread.providerThreadId;
+          const payload: VerifiedChangePayload = { title, body, files, chatId };
           // Run off the chat turn: clone + install + typecheck is too slow to
           // block a reply. The scheduler fires (~immediately) on the same DO,
           // and the result is delivered proactively. delaySeconds 1 keeps it
