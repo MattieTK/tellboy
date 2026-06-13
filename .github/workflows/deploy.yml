@@ -34,5 +34,8 @@ jobs:
       # across deploys, so only the deploy credentials are needed here.
       - uses: cloudflare/wrangler-action@v3
         with:
+          # Pin to v4: the action otherwise installs wrangler 3.x, which can't
+          # parse wrangler.jsonc and fails with "Missing entry-point".
+          wranglerVersion: "4.100.0"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
