@@ -32,10 +32,10 @@ jobs:
       # Builds the Worker + Sandbox container image and deploys. Existing
       # secrets (GITHUB_TOKEN, BRAVE_API_KEY, TELEGRAM_*) persist on the Worker
       # across deploys, so only the deploy credentials are needed here.
-      - uses: cloudflare/wrangler-action@v3
+      - uses: cloudflare/wrangler-action@v4
         with:
-          # Pin to v4: the action otherwise installs wrangler 3.x, which can't
-          # parse wrangler.jsonc and fails with "Missing entry-point".
+          # v4 defaults to Wrangler v4; pin the exact version for reproducible
+          # CI matching the project's lockfile (and to parse wrangler.jsonc).
           wranglerVersion: "4.100.0"
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
