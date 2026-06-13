@@ -13,9 +13,9 @@ export default {
     // Health check. Matches the root path exactly so it cannot swallow the
     // /agents/* routes that routeAgentRequest needs (those have longer paths).
     if (request.method === "GET" && url.pathname === "/") {
-      return new Response("tellboy: ok", {
+      return new Response(JSON.stringify({ status: "ok", name: "tellboy" }), {
         status: 200,
-        headers: { "content-type": "text/plain" },
+        headers: { "content-type": "application/json" },
       });
     }
 
