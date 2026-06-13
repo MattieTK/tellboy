@@ -65,13 +65,25 @@ messenger. For proactive sends (reminders, background results) call the Telegram
 Bot API directly (`sendMessage`) with a known chat id — see `notifyUser` in
 `src/agent.ts`.
 
-### Rich Messages (Bot API 10.1) are not reachable through the stack
+### Telegram formatting: HTML via a local adapter patch
 
-`@chat-adapter/telegram` only calls `sendMessage`/`editMessageText` and supports
-MarkdownV2 or plain — never HTML, and no `sendRichMessage` hook. Normal replies
-already render as MarkdownV2 via the adapter. `src/format.ts` (markdown →
-Telegram HTML) is only usable on the direct-send path where we bypass the
-adapter. True Rich Messages would need an upstream change to the adapter/Think.
+Replies render rich text via **HTML**, enabled by a local pnpm patch to
+`@chat-adapter/telegram` (`patches/@chat-adapter__telegram.patch`, wired in
+`pnpm-workspace.yaml`). The patch overrides the converter's `fromMarkdown` to
+emit Telegram HTML (a port of `src/format.ts`) and makes `toBotApiParseMode`
+send `parse_mode: HTML`. This unlocks entities MarkdownV2 didn't give us
+(`tg-spoiler`, `tg-emoji`, expandable blockquote). The adapter still falls back
+to plain text on any parse error, so a bad render degrades gracefully.
+
+**Don't drop the patch** (`pnpm install` re-applies it; keep the `patches/`
+file and the `pnpm-workspace.yaml` entry committed). If you bump the adapter
+version, regenerate the patch (`pnpm patch @chat-adapter/telegram`). The model
+emits Markdown; the adapter converts it — so format with normal Markdown, not
+raw HTML.
+
+True Rich Messages (`sendRichMessage` + `RichBlock*` layout, native tables)
+remain out of scope — they need a new adapter send method and structured input
+the LLM doesn't produce. HTML covers the rich-text cases.
 
 ### The bot holds no deploy/observability credential
 

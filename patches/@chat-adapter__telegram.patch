@@ -1,0 +1,172 @@
+diff --git a/dist/index.js b/dist/index.js
+index 3198baf88d5cbe3e83d04b02813db71dc6404d9b..abd6e98f09a70e8fd2fca90bf948e9297348c6c4 100644
+--- a/dist/index.js
++++ b/dist/index.js
+@@ -126,7 +126,156 @@ var MARKDOWNV2_SPECIAL_CHARS = /([_*[\]()~`>#+\-=|{}.!\\])/g;
+ var CODE_BLOCK_SPECIAL_CHARS = /([`\\])/g;
+ var LINK_URL_SPECIAL_CHARS = /([)\\])/g;
+ function toBotApiParseMode(mode) {
+-  return mode === "MarkdownV2" ? "MarkdownV2" : void 0;
++  return mode === "MarkdownV2" || mode === "HTML" ? "HTML" : void 0;
++}
++function tb_escapeHtml(text) {
++  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
++}
++function tb_escapeHref(url) {
++  return tb_escapeHtml(url).replace(/"/g, "&quot;");
++}
++function tb_matchLink(input, start) {
++  const labelEnd = input.indexOf("]", start + 1);
++  if (labelEnd === -1 || input[labelEnd + 1] !== "(") return null;
++  const urlEnd = input.indexOf(")", labelEnd + 2);
++  if (urlEnd === -1) return null;
++  const label = input.slice(start + 1, labelEnd);
++  const url = input.slice(labelEnd + 2, urlEnd).trim();
++  if (url === "") return null;
++  return { label, url, end: urlEnd + 1 };
++}
++function tb_matchDelimited(input, start, delim) {
++  const contentStart = start + delim.length;
++  const close = input.indexOf(delim, contentStart);
++  if (close === -1 || close === contentStart) return null;
++  return { content: input.slice(contentStart, close), end: close + delim.length };
++}
++function tb_inlineToHtml(input) {
++  let out = "";
++  let i = 0;
++  const n = input.length;
++  let literal = "";
++  const flush = () => { if (literal) { out += tb_escapeHtml(literal); literal = ""; } };
++  while (i < n) {
++    const ch = input[i];
++    if (ch === "`") {
++      let fence = 0;
++      while (input[i + fence] === "`") fence++;
++      const open = "`".repeat(fence);
++      const close = input.indexOf(open, i + fence);
++      if (close !== -1) {
++        flush();
++        const code = input.slice(i + fence, close);
++        const trimmed = code.startsWith(" ") && code.endsWith(" ") && code.trim() !== "" ? code.slice(1, -1) : code;
++        out += "<code>" + tb_escapeHtml(trimmed) + "</code>";
++        i = close + fence;
++        continue;
++      }
++    }
++    if (ch === "[") {
++      const link = tb_matchLink(input, i);
++      if (link) {
++        flush();
++        out += '<a href="' + tb_escapeHref(link.url) + '">' + tb_inlineToHtml(link.label) + "</a>";
++        i = link.end;
++        continue;
++      }
++    }
++    if (ch === "|" && input[i + 1] === "|") {
++      const span = tb_matchDelimited(input, i, "||");
++      if (span) { flush(); out += "<tg-spoiler>" + tb_inlineToHtml(span.content) + "</tg-spoiler>"; i = span.end; continue; }
++    }
++    if (ch === "~" && input[i + 1] === "~") {
++      const span = tb_matchDelimited(input, i, "~~");
++      if (span) { flush(); out += "<s>" + tb_inlineToHtml(span.content) + "</s>"; i = span.end; continue; }
++    }
++    if ((ch === "*" && input[i + 1] === "*") || (ch === "_" && input[i + 1] === "_")) {
++      const delim = ch + ch;
++      const span = tb_matchDelimited(input, i, delim);
++      if (span) { flush(); out += "<b>" + tb_inlineToHtml(span.content) + "</b>"; i = span.end; continue; }
++    }
++    if (ch === "*" || ch === "_") {
++      const span = tb_matchDelimited(input, i, ch);
++      if (span && span.content.trim() !== "") { flush(); out += "<i>" + tb_inlineToHtml(span.content) + "</i>"; i = span.end; continue; }
++    }
++    literal += ch;
++    i++;
++  }
++  flush();
++  return out;
++}
++function tb_matchFence(line) {
++  const m = /^(\s*)(`{3,}|~{3,})\s*([^`]*)$/.exec(line);
++  if (!m) return null;
++  return { marker: m[2], lang: m[3].trim() };
++}
++function tb_splitTableRow(line) {
++  let row = line.trim();
++  if (row.startsWith("|")) row = row.slice(1);
++  if (row.endsWith("|")) row = row.slice(0, -1);
++  return row.split("|").map((c) => c.trim());
++}
++function tb_isTableDelimiter(line) {
++  const cells = tb_splitTableRow(line);
++  if (cells.length === 0) return false;
++  return cells.every((c) => /^:?-{1,}:?$/.test(c));
++}
++function tb_tableToHtml(rows) {
++  const colCount = rows.reduce((max, r) => Math.max(max, r.length), 0);
++  const widths = new Array(colCount).fill(0);
++  for (const row of rows) for (let c = 0; c < colCount; c++) widths[c] = Math.max(widths[c], (row[c] ?? "").length);
++  const pad = (text, width) => text + " ".repeat(width - text.length);
++  const lines = rows.map((row) => Array.from({ length: colCount }, (_, c) => pad(row[c] ?? "", widths[c])).join("  "));
++  return "<pre>" + tb_escapeHtml(lines.join("\n")) + "</pre>";
++}
++function tb_markdownToHtml(markdown) {
++  const lines = (markdown ?? "").replace(/\r\n/g, "\n").split("\n");
++  const out = [];
++  let fence = null;
++  let tableBuffer = [];
++  const flushTable = () => {
++    if (tableBuffer.length === 0) return;
++    if (tableBuffer.length >= 2 && tb_isTableDelimiter(tableBuffer[1])) {
++      const header = tb_splitTableRow(tableBuffer[0]);
++      const body = tableBuffer.slice(2).map(tb_splitTableRow);
++      out.push(tb_tableToHtml([header].concat(body)));
++    } else {
++      for (const raw of tableBuffer) out.push(tb_inlineToHtml(raw));
++    }
++    tableBuffer = [];
++  };
++  for (const line of lines) {
++    if (fence) {
++      const close = tb_matchFence(line);
++      if (close && line.trim().startsWith(fence.marker)) {
++        const body = tb_escapeHtml(fence.lines.join("\n"));
++        const cls = fence.lang ? ' class="language-' + tb_escapeHtml(fence.lang) + '"' : "";
++        out.push("<pre><code" + cls + ">" + body + "</code></pre>");
++        fence = null;
++      } else { fence.lines.push(line); }
++      continue;
++    }
++    const fenceOpen = tb_matchFence(line);
++    if (fenceOpen) { flushTable(); fence = { marker: fenceOpen.marker, lang: fenceOpen.lang, lines: [] }; continue; }
++    if (line.includes("|") && line.trim() !== "") { tableBuffer.push(line); continue; }
++    flushTable();
++    const quote = /^\s*>\s?(.*)$/.exec(line);
++    if (quote) { out.push("<blockquote>" + tb_inlineToHtml(quote[1]) + "</blockquote>"); continue; }
++    const heading = /^\s*#{1,6}\s+(.*)$/.exec(line);
++    if (heading) { out.push("<b>" + tb_inlineToHtml(heading[1].trim()) + "</b>"); continue; }
++    const bullet = /^(\s*)[-*+]\s+(.*)$/.exec(line);
++    if (bullet) { out.push(bullet[1] + "• " + tb_inlineToHtml(bullet[2])); continue; }
++    const ordered = /^(\s*)(\d+)[.)]\s+(.*)$/.exec(line);
++    if (ordered) { out.push(ordered[1] + ordered[2] + ". " + tb_inlineToHtml(ordered[3])); continue; }
++    out.push(line.trim() === "" ? "" : tb_inlineToHtml(line));
++  }
++  if (fence) {
++    const body = tb_escapeHtml(fence.lines.join("\n"));
++    const cls = fence.lang ? ' class="language-' + tb_escapeHtml(fence.lang) + '"' : "";
++    out.push("<pre><code" + cls + ">" + body + "</code></pre>");
++  }
++  flushTable();
++  return out.join("\n");
+ }
+ var TELEGRAM_MESSAGE_LIMIT = 4096;
+ var TELEGRAM_CAPTION_LIMIT = 1024;
+@@ -342,6 +491,9 @@ var TelegramFormatConverter = class extends BaseFormatConverter {
+   toAst(text) {
+     return parseMarkdown(text);
+   }
++  fromMarkdown(text) {
++    return tb_markdownToHtml(text);
++  }
+   renderPostable(message) {
+     if (typeof message === "string") {
+       return message;

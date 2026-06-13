@@ -1,0 +1,2 @@
+patchedDependencies:
+  '@chat-adapter/telegram': patches/@chat-adapter__telegram.patch
