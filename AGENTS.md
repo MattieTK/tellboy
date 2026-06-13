@@ -45,6 +45,16 @@ during a turn.
   (`src/plugins/`) capturing `chatId` and `deliverReminder`/`runVerifiedChange`
   (`src/agent.ts`) reading it from the payload.
 
+### Scheduled-alarm callbacks must never throw
+
+A callback invoked from `this.schedule(...)` (e.g. `deliverReminder`,
+`runVerifiedChange`) that throws makes the scheduler **retry its alarm on a
+tight ~13s loop**, which jams the Durable Object — no chat replies, just
+`_cf_dispatchScheduledCallback` + `canceled alarm` churn in the logs, and
+(confusingly) often no exception surfaced. Wrap these callbacks (and anything
+they await, like `sendTelegram`) in try/catch that logs and swallows. Dropping a
+reminder is far better than wedging the bot.
+
 ### `beforeTurn` must not block on I/O
 
 `beforeTurn` runs before the model produces any output. If it `await`s

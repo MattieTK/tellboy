@@ -217,11 +217,18 @@ export class TellboyAgent extends Think<Env> {
   // this code runs on the per-thread Durable Object that owns the alarm, so it
   // already holds that conversation's messenger binding.
   async deliverReminder(payload: ReminderPayload): Promise<void> {
-    console.log(
-      "tellboy: deliverReminder fired",
-      JSON.stringify({ hasChatId: payload.chatId !== undefined }),
-    );
-    await this.notifyUser(`⏰ Reminder: ${payload.message}`, payload.chatId);
+    // Swallow errors: a throw here makes the scheduler retry the alarm on a
+    // tight loop, which jams the DO (see AGENTS.md). Better to drop a reminder
+    // than to wedge the bot.
+    try {
+      console.log(
+        "tellboy: deliverReminder fired",
+        JSON.stringify({ hasChatId: payload.chatId !== undefined }),
+      );
+      await this.notifyUser(`⏰ Reminder: ${payload.message}`, payload.chatId);
+    } catch (err) {
+      console.error("tellboy: deliverReminder failed (swallowed)", String(err));
+    }
   }
 
   // Proactively message the user via the Telegram API directly. Used by the
@@ -263,18 +270,25 @@ export class TellboyAgent extends Think<Env> {
     if (threadId !== undefined) body.message_thread_id = threadId;
     if (parseMode) body.parse_mode = parseMode;
 
-    const res = await fetch(
-      `https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      },
-    );
-    if (!res.ok) {
-      console.error("tellboy: Telegram send failed", res.status, await res.text());
+    // Never throw out of here: this runs inside scheduled-alarm callbacks, and
+    // an uncaught throw makes the alarm retry on a tight loop (jamming the DO).
+    try {
+      const res = await fetch(
+        `https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!res.ok) {
+        console.error("tellboy: Telegram send failed", res.status, await res.text());
+      }
+      return res.ok;
+    } catch (err) {
+      console.error("tellboy: Telegram send threw", String(err));
+      return false;
     }
-    return res.ok;
   }
 
   // Scheduler callback for the selfdev `propose_change` tool. Runs OFF the chat

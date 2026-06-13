@@ -4,24 +4,19 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-patchedDependencies:
-  '@chat-adapter/telegram':
-    hash: 4dce751bb2e0558ac36ead02d9ef299269bcf4303d20cfc57b032c33907160cc
-    path: patches/@chat-adapter__telegram.patch
-
 importers:
 
   .:
     dependencies:
       '@chat-adapter/telegram':
         specifier: ^4.30.0
-        version: 4.30.0(patch_hash=4dce751bb2e0558ac36ead02d9ef299269bcf4303d20cfc57b032c33907160cc)(ai@6.0.204(zod@4.4.3))(zod@4.4.3)
+        version: 4.30.0(ai@6.0.204(zod@4.4.3))(zod@4.4.3)
       '@cloudflare/sandbox':
         specifier: 0.12.1
         version: 0.12.1
       '@cloudflare/think':
         specifier: ^0.9.0
-        version: 0.9.0(@chat-adapter/telegram@4.30.0(patch_hash=4dce751bb2e0558ac36ead02d9ef299269bcf4303d20cfc57b032c33907160cc)(ai@6.0.204(zod@4.4.3))(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(agents@0.16.0(@babel/core@7.29.7)(@babel/runtime@7.29.7)(@cloudflare/workers-types@4.20260612.1)(ai@6.0.204(zod@4.4.3))(chat@4.30.0(ai@6.0.204(zod@4.4.3))(zod@4.4.3))(react@19.2.7)(rolldown@1.1.1)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(yaml@2.9.0))(zod@4.4.3))(ai@6.0.204(zod@4.4.3))(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(yaml@2.9.0))(zod@4.4.3)
+        version: 0.9.0(@chat-adapter/telegram@4.30.0(ai@6.0.204(zod@4.4.3))(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(agents@0.16.0(@babel/core@7.29.7)(@babel/runtime@7.29.7)(@cloudflare/workers-types@4.20260612.1)(ai@6.0.204(zod@4.4.3))(chat@4.30.0(ai@6.0.204(zod@4.4.3))(zod@4.4.3))(react@19.2.7)(rolldown@1.1.1)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(yaml@2.9.0))(zod@4.4.3))(ai@6.0.204(zod@4.4.3))(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(yaml@2.9.0))(zod@4.4.3)
       agents:
         specifier: ^0.16.0
         version: 0.16.0(@babel/core@7.29.7)(@babel/runtime@7.29.7)(@cloudflare/workers-types@4.20260612.1)(ai@6.0.204(zod@4.4.3))(chat@4.30.0(ai@6.0.204(zod@4.4.3))(zod@4.4.3))(react@19.2.7)(rolldown@1.1.1)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(yaml@2.9.0))(zod@4.4.3)
@@ -2833,7 +2828,7 @@ snapshots:
       - supports-color
       - zod
 
-  '@chat-adapter/telegram@4.30.0(patch_hash=4dce751bb2e0558ac36ead02d9ef299269bcf4303d20cfc57b032c33907160cc)(ai@6.0.204(zod@4.4.3))(zod@4.4.3)':
+  '@chat-adapter/telegram@4.30.0(ai@6.0.204(zod@4.4.3))(zod@4.4.3)':
     dependencies:
       '@chat-adapter/shared': 4.30.0(ai@6.0.204(zod@4.4.3))(zod@4.4.3)
       chat: 4.30.0(ai@6.0.204(zod@4.4.3))(zod@4.4.3)
@@ -2872,7 +2867,7 @@ snapshots:
       - ai
       - zod
 
-  '@cloudflare/think@0.9.0(@chat-adapter/telegram@4.30.0(patch_hash=4dce751bb2e0558ac36ead02d9ef299269bcf4303d20cfc57b032c33907160cc)(ai@6.0.204(zod@4.4.3))(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(agents@0.16.0(@babel/core@7.29.7)(@babel/runtime@7.29.7)(@cloudflare/workers-types@4.20260612.1)(ai@6.0.204(zod@4.4.3))(chat@4.30.0(ai@6.0.204(zod@4.4.3))(zod@4.4.3))(react@19.2.7)(rolldown@1.1.1)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(yaml@2.9.0))(zod@4.4.3))(ai@6.0.204(zod@4.4.3))(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(yaml@2.9.0))(zod@4.4.3)':
+  '@cloudflare/think@0.9.0(@chat-adapter/telegram@4.30.0(ai@6.0.204(zod@4.4.3))(zod@4.4.3))(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(agents@0.16.0(@babel/core@7.29.7)(@babel/runtime@7.29.7)(@cloudflare/workers-types@4.20260612.1)(ai@6.0.204(zod@4.4.3))(chat@4.30.0(ai@6.0.204(zod@4.4.3))(zod@4.4.3))(react@19.2.7)(rolldown@1.1.1)(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(yaml@2.9.0))(zod@4.4.3))(ai@6.0.204(zod@4.4.3))(vite@8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(yaml@2.9.0))(zod@4.4.3)':
     dependencies:
       '@cloudflare/codemode': 0.4.0(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(ai@6.0.204(zod@4.4.3))(zod@4.4.3)
       '@cloudflare/shell': 0.4.0(@modelcontextprotocol/sdk@1.29.0(@cfworker/json-schema@4.1.1)(zod@4.4.3))(ai@6.0.204(zod@4.4.3))(zod@4.4.3)
@@ -2886,7 +2881,7 @@ snapshots:
       yargs: 18.0.0
       zod: 4.4.3
     optionalDependencies:
-      '@chat-adapter/telegram': 4.30.0(patch_hash=4dce751bb2e0558ac36ead02d9ef299269bcf4303d20cfc57b032c33907160cc)(ai@6.0.204(zod@4.4.3))(zod@4.4.3)
+      '@chat-adapter/telegram': 4.30.0(ai@6.0.204(zod@4.4.3))(zod@4.4.3)
       vite: 8.0.16(@types/node@25.9.3)(esbuild@0.28.1)(yaml@2.9.0)
     transitivePeerDependencies:
       - '@modelcontextprotocol/sdk'
