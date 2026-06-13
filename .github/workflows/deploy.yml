@@ -26,8 +26,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      # Gate the deploy on a clean typecheck so a bad merge can't ship.
+      # Gate the deploy on a clean typecheck and passing tests, so a bad merge
+      # (including a bot-merged self-PR) can't ship.
       - run: pnpm typecheck
+      - run: pnpm test
 
       # Builds the Worker + Sandbox container image and deploys. Existing
       # secrets (GITHUB_TOKEN, BRAVE_API_KEY, TELEGRAM_*) persist on the Worker

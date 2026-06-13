@@ -3,6 +3,26 @@
 Notes for agents (and humans) working on tellboy. See `README.md` for setup and
 `src/agent.ts` for the main wiring.
 
+## Self-modification is gated by tests, not humans
+
+The bot can read its own source, open PRs, **and merge its own `bot/*` PRs**, so
+self-improvement runs end-to-end with no human in the loop. The gates are
+automated and must stay meaningful:
+
+- `propose_change` only opens a PR if `pnpm typecheck` **and** `pnpm test` pass
+  in the sandbox (`TellboyAgent.runVerifiedChange`).
+- CI (`.github/workflows/deploy.yml`) re-runs `pnpm typecheck` + `pnpm test`
+  before a merged change deploys.
+- `merge_pull_request`/`close_pull_request` are scoped to `bot/*` branches;
+  `propose_change` refuses `.github/` and `deployer/`.
+
+**Therefore: keep `tests/` covering the core, and never weaken the CI/sandbox
+gate.** Tests run in plain Node (`vitest`), so they can only cover modules that
+don't import `cloudflare:workers` (formatting, plugin enablement, the GitHub
+client) — `agent.ts`/`index.ts` are covered by `pnpm typecheck`. If you add
+runtime/worker behaviour worth protecting, add `@cloudflare/vitest-pool-workers`
+integration tests rather than letting the gate go stale.
+
 ## Gotchas
 
 ### Scheduled alarms run on the top-level agent, not the per-thread sub-agent

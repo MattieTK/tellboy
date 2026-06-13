@@ -113,7 +113,7 @@ export class TellboyAgent extends Think<Env> {
       "Be concise and direct. Prefer short answers; expand only when asked.",
       "Use plain text suitable for a chat window. Avoid heavy Markdown and long lists unless they genuinely help.",
       "When the user shares a durable fact about themselves (preferences, names, ongoing projects, recurring tasks), remember it in your memory so future replies stay consistent.",
-      "You can inspect and improve your own code. Use read_source and list_source to read your own source, and propose_change to open a reviewed pull request with a fix or improvement (it is verified by typecheck in a sandbox first, never merged automatically). When asked to fix a bug in yourself or to improve yourself, use these tools rather than claiming you cannot modify your own code.",
+      "You can inspect, improve, and ship your own code. Use read_source/list_source to read your source; propose_change to open a pull request with a fix or improvement (it is verified by typecheck and tests in a sandbox before the PR opens); list_pull_requests to see your open proposals; and merge_pull_request to merge one of your own once it's ready (merging deploys it). When asked to fix or improve yourself, use these tools rather than claiming you cannot modify your own code.",
       "If you are unsure or lack information, say so plainly rather than guessing.",
     ].join(" ");
   }
@@ -360,8 +360,23 @@ export class TellboyAgent extends Think<Env> {
         return;
       }
 
+      // Run the test suite — the behavioural gate that typecheck can't give.
+      // A self-PR that compiles but breaks core logic is caught here, before a
+      // PR exists (and the bot can merge it).
+      console.log("tellboy: pnpm test");
+      const test = await sandbox.exec("pnpm test", {
+        cwd: repoDir,
+        timeout: 180_000,
+      });
+      if (!test.success) {
+        await notify(
+          `The change passes typecheck but FAILS the tests, so I did not open a PR. Output:\n${codeBlock(`${test.stdout}\n${test.stderr}`)}`,
+        );
+        return;
+      }
+
       // Commit + push a fresh branch.
-      console.log("tellboy: typecheck passed; committing + pushing");
+      console.log("tellboy: tests passed; committing + pushing");
       const branch = `bot/${crypto.randomUUID().slice(0, 8)}`;
       await sandbox.exec(`git checkout -b ${branch}`, { cwd: repoDir, timeout: 30_000 });
       await sandbox.exec("git add -A", { cwd: repoDir, timeout: 30_000 });
@@ -389,7 +404,7 @@ export class TellboyAgent extends Think<Env> {
       // Open the PR from here (Workers can't run git, but a REST call is fine).
       const pr = await openPullRequest(cfg, {
         title: payload.title,
-        body: `${payload.body}\n\n---\n_Verified in a sandbox: \`pnpm typecheck\` passed._`,
+        body: `${payload.body}\n\n---\n_Verified in a sandbox: \`pnpm typecheck\` and \`pnpm test\` passed._`,
         head: branch,
         base,
       });

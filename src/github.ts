@@ -110,3 +110,95 @@ export async function openPullRequest(
   const pr = (await res.json()) as { html_url: string; number: number };
   return { url: pr.html_url, number: pr.number };
 }
+
+export interface PullRequestInfo {
+  number: number;
+  title: string;
+  head: string; // branch ref
+  state: string;
+  url: string;
+}
+
+export async function listPullRequests(
+  cfg: GitHubConfig,
+): Promise<PullRequestInfo[]> {
+  const res = await ghFetch(
+    cfg,
+    "GET",
+    `/repos/${cfg.repo}/pulls?state=open&per_page=50`,
+  );
+  if (!res.ok) throw new Error(await ghError(res));
+  const arr = (await res.json()) as Array<{
+    number: number;
+    title: string;
+    head: { ref: string };
+    state: string;
+    html_url: string;
+  }>;
+  return arr.map((p) => ({
+    number: p.number,
+    title: p.title,
+    head: p.head.ref,
+    state: p.state,
+    url: p.html_url,
+  }));
+}
+
+export async function getPullRequest(
+  cfg: GitHubConfig,
+  number: number,
+): Promise<PullRequestInfo> {
+  const res = await ghFetch(cfg, "GET", `/repos/${cfg.repo}/pulls/${number}`);
+  if (!res.ok) throw new Error(await ghError(res));
+  const p = (await res.json()) as {
+    number: number;
+    title: string;
+    head: { ref: string };
+    state: string;
+    html_url: string;
+  };
+  return {
+    number: p.number,
+    title: p.title,
+    head: p.head.ref,
+    state: p.state,
+    url: p.html_url,
+  };
+}
+
+export async function mergePullRequest(
+  cfg: GitHubConfig,
+  number: number,
+  method: "merge" | "squash" | "rebase" = "squash",
+): Promise<{ merged: boolean; message?: string }> {
+  const res = await ghFetch(
+    cfg,
+    "PUT",
+    `/repos/${cfg.repo}/pulls/${number}/merge`,
+    { merge_method: method },
+  );
+  const data = (await res.json()) as { merged?: boolean; message?: string };
+  if (!res.ok) {
+    throw new Error(`GitHub API ${res.status}: ${data.message ?? "merge failed"}`);
+  }
+  return { merged: Boolean(data.merged), message: data.message };
+}
+
+export async function closePullRequest(
+  cfg: GitHubConfig,
+  number: number,
+): Promise<void> {
+  const res = await ghFetch(cfg, "PATCH", `/repos/${cfg.repo}/pulls/${number}`, {
+    state: "closed",
+  });
+  if (!res.ok) throw new Error(await ghError(res));
+}
+
+// Delete a branch ref (used to tidy up after a merge/close).
+export async function deleteBranch(
+  cfg: GitHubConfig,
+  branch: string,
+): Promise<void> {
+  // Best-effort: ignore failures (e.g. branch already gone).
+  await ghFetch(cfg, "DELETE", `/repos/${cfg.repo}/git/refs/heads/${branch}`);
+}

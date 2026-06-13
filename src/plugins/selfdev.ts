@@ -1,15 +1,31 @@
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
 import { envFlag, type Plugin } from "./types";
-import { readSourceFile, listSourceFiles, type GitHubConfig } from "../github";
+import {
+  readSourceFile,
+  listSourceFiles,
+  listPullRequests,
+  getPullRequest,
+  mergePullRequest,
+  closePullRequest,
+  deleteBranch,
+  type GitHubConfig,
+} from "../github";
 import type { TellboyAgent } from "../agent";
 
-// Self-development: lets the bot read its own source and propose changes to
-// itself. Reads go straight through the GitHub REST API (cheap). Changes are
-// not opened blindly — `propose_change` hands the edit to a Sandbox container
-// that clones the repo, applies the files, and runs `pnpm typecheck` before a
-// PR is opened (see TellboyAgent.runVerifiedChange). A human still reviews and
-// merges the PR: that is the safety gate on self-modification.
+// Self-development: lets the bot read its own source, propose changes to
+// itself, and manage/merge its own PRs. Reads go straight through the GitHub
+// REST API (cheap). Changes are not opened blindly — `propose_change` hands the
+// edit to a Sandbox container that clones the repo, applies the files, and runs
+// `pnpm typecheck` AND `pnpm test` before a PR is opened (see
+// TellboyAgent.runVerifiedChange).
+//
+// The bot can also merge its own PRs (`merge_pull_request`), so self-improvement
+// can run end-to-end without a human. The safety gates are therefore the
+// automated ones: the sandbox typecheck+tests at PR-creation time, and CI which
+// re-runs typecheck+tests before a merged change deploys. merge/close are scoped
+// to the bot's own `bot/*` branches so it can never touch a human's PR, and
+// `propose_change` refuses to edit the deploy machinery (.github/, deployer/).
 //
 // Enabled when GITHUB_TOKEN and GITHUB_REPO ("owner/name") are both set;
 // force on/off with ENABLE_SELFDEV.
@@ -133,6 +149,85 @@ export const selfdevPlugin: Plugin = {
               "link or the type errors",
             files: files.map((f) => f.path),
           };
+        },
+      }),
+
+      list_pull_requests: tool({
+        description: "List the bot's own open pull requests (its proposed changes).",
+        inputSchema: z.object({}),
+        execute: async () => {
+          try {
+            const pulls = (await listPullRequests(cfg)).filter((p) =>
+              p.head.startsWith("bot/"),
+            );
+            return { pulls };
+          } catch (err) {
+            return { error: String(err instanceof Error ? err.message : err) };
+          }
+        },
+      }),
+
+      merge_pull_request: tool({
+        description:
+          "Merge one of the bot's OWN pull requests (branch starting with " +
+          "'bot/') once it's ready to ship. Squash-merges and deletes the " +
+          "branch. Merging to master auto-deploys via CI, which re-runs the " +
+          "tests first. Refuses any PR not created by the bot.",
+        inputSchema: z.object({
+          number: z
+            .number()
+            .int()
+            .describe("PR number, from list_pull_requests."),
+        }),
+        execute: async ({ number }) => {
+          try {
+            const pr = await getPullRequest(cfg, number);
+            // Only ever merge the bot's own PRs — never a human's.
+            if (!pr.head.startsWith("bot/")) {
+              return {
+                error: `PR #${number} (branch ${pr.head}) was not created by the bot; refusing to merge.`,
+              };
+            }
+            if (pr.state !== "open") {
+              return { error: `PR #${number} is ${pr.state}, not open.` };
+            }
+            const result = await mergePullRequest(cfg, number, "squash");
+            if (!result.merged) {
+              return { error: result.message ?? "Merge failed." };
+            }
+            await deleteBranch(cfg, pr.head);
+            return {
+              ok: true,
+              merged: number,
+              note: "merged to master; CI will run tests and deploy",
+            };
+          } catch (err) {
+            return { error: String(err instanceof Error ? err.message : err) };
+          }
+        },
+      }),
+
+      close_pull_request: tool({
+        description:
+          "Close one of the bot's OWN pull requests without merging (e.g. a " +
+          "duplicate or a superseded proposal). Deletes the branch.",
+        inputSchema: z.object({
+          number: z.number().int().describe("PR number, from list_pull_requests."),
+        }),
+        execute: async ({ number }) => {
+          try {
+            const pr = await getPullRequest(cfg, number);
+            if (!pr.head.startsWith("bot/")) {
+              return {
+                error: `PR #${number} (branch ${pr.head}) was not created by the bot; refusing to close.`,
+              };
+            }
+            await closePullRequest(cfg, number);
+            await deleteBranch(cfg, pr.head);
+            return { ok: true, closed: number };
+          } catch (err) {
+            return { error: String(err instanceof Error ? err.message : err) };
+          }
         },
       }),
     };
