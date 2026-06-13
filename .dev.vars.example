@@ -28,6 +28,14 @@ BRAVE_API_KEY=""
 #
 # reminders (alarms via the Agents SDK scheduler): on by default, no key needed.
 # ENABLE_REMINDERS="false"  # set to disable
+#
+# selfdev (read own source + open PRs to itself): auto-enables when both
+# GITHUB_TOKEN and GITHUB_REPO are set. The token needs contents + pull-request
+# write on the repo. Prefer a fine-grained PAT scoped to ONLY this repo over a
+# broad token. GITHUB_REPO also lives in wrangler.jsonc [vars].
+GITHUB_TOKEN=""
+GITHUB_REPO="owner/name"
+# ENABLE_SELFDEV="false"   # force on/off
 
 # --- Used only by scripts/register-webhook.ts (not read by the Worker) ---
 # Base URL of the deployed Worker, e.g. https://tellboy.<subdomain>.workers.dev

@@ -15,4 +15,11 @@ interface Env {
   ENABLE_WEBSEARCH?: string;
   /** Explicit on/off override for the reminders plugin (e.g. "true"/"false"). */
   ENABLE_REMINDERS?: string;
+
+  /** GitHub token (contents + PR write) for the selfdev plugin. */
+  GITHUB_TOKEN?: string;
+  /** Target repo for selfdev, as "owner/name", e.g. "MattieTK/tellboy". */
+  GITHUB_REPO?: string;
+  /** Explicit on/off override for the selfdev plugin (e.g. "true"/"false"). */
+  ENABLE_SELFDEV?: string;
 }

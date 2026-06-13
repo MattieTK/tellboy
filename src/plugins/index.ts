@@ -3,10 +3,15 @@ import type { TellboyAgent } from "../agent";
 import type { Plugin } from "./types";
 import { remindersPlugin } from "./reminders";
 import { websearchPlugin } from "./websearch";
+import { selfdevPlugin } from "./selfdev";
 
 // Register plugins here. Order matters only on tool-name collisions (later
 // wins via the spread below), so keep tool names unique across plugins.
-const REGISTRY: readonly Plugin[] = [remindersPlugin, websearchPlugin];
+const REGISTRY: readonly Plugin[] = [
+  remindersPlugin,
+  websearchPlugin,
+  selfdevPlugin,
+];
 
 /**
  * Merge the tools of every plugin enabled for this environment. `env` is
