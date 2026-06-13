@@ -40,6 +40,7 @@ interface LogEvent {
   timestamp?: number;
   level?: string;
   message?: string;
+  outcome?: string;
 }
 
 function clamp(n: unknown, min: number, max: number, fallback: number): number {
@@ -117,10 +118,13 @@ export class TellboyDeployer extends WorkerEntrypoint<Env> {
     const data = (await res.json()) as {
       result?: { events?: { events?: Array<Record<string, any>> } };
     };
+    // Returned events carry their fields under `source` and `$workers`; the
+    // `$metadata.*` keys are only used for filtering, not present on results.
     const events: LogEvent[] = (data.result?.events?.events ?? []).map((e) => ({
-      timestamp: e.$metadata?.timestamp ?? e.timestamp,
-      level: e.$metadata?.level,
-      message: e.$metadata?.message ?? e.body,
+      timestamp: e.timestamp ?? e.$metadata?.timestamp,
+      level: e.source?.level ?? e.$metadata?.level,
+      message: e.source?.message ?? e.$metadata?.message ?? e.body,
+      outcome: e.$workers?.outcome,
     }));
     return { events };
   }

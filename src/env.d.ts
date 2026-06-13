@@ -43,7 +43,14 @@ interface Env {
       limit?: number;
       level?: string;
     }): Promise<
-      | { events: Array<{ timestamp?: number; level?: string; message?: string }> }
+      | {
+          events: Array<{
+            timestamp?: number;
+            level?: string;
+            message?: string;
+            outcome?: string;
+          }>;
+        }
       | { error: string }
     >;
   };
