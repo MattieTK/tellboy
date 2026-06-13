@@ -1,0 +1,38 @@
+name: Deploy
+
+# Deploy-on-merge: when a PR (including one the bot opened via propose_change)
+# is merged to the default branch, typecheck then deploy to Cloudflare. The
+# human review/merge is the gate — the bot proposes, a person merges, CI ships.
+# Manual runs are allowed via the Actions tab (workflow_dispatch).
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Gate the deploy on a clean typecheck so a bad merge can't ship.
+      - run: pnpm typecheck
+
+      # Builds the Worker + Sandbox container image and deploys. Existing
+      # secrets (GITHUB_TOKEN, BRAVE_API_KEY, TELEGRAM_*) persist on the Worker
+      # across deploys, so only the deploy credentials are needed here.
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

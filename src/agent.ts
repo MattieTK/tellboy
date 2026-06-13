@@ -21,6 +21,10 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+// Durable-storage key for the Telegram chat id captured during inbound turns,
+// used to deliver proactive messages (reminders, selfdev results).
+const TG_CHAT_KEY = "tg_chat_id";
+
 // --- Compaction policy ---------------------------------------------------
 //
 // This is the tier that keeps per-message input tokens bounded the way Poke
@@ -103,6 +107,7 @@ export class TellboyAgent extends Think<Env> {
       "Be concise and direct. Prefer short answers; expand only when asked.",
       "Use plain text suitable for a chat window. Avoid heavy Markdown and long lists unless they genuinely help.",
       "When the user shares a durable fact about themselves (preferences, names, ongoing projects, recurring tasks), remember it in your memory so future replies stay consistent.",
+      "You can inspect and improve your own code. Use read_source and list_source to read your own source, and propose_change to open a reviewed pull request with a fix or improvement (it is verified by typecheck in a sandbox first, never merged automatically). When asked to fix a bug in yourself or to improve yourself, use these tools rather than claiming you cannot modify your own code.",
       "If you are unsure or lack information, say so plainly rather than guessing.",
     ].join(" ");
   }
@@ -120,7 +125,15 @@ export class TellboyAgent extends Think<Env> {
   // it here rather than as a cached context block so it stays fresh each turn.
   // The trade-off is a small prefix-cache cost — acceptable for a personal
   // assistant, and the live conversation below the system prompt still caches.
-  beforeTurn(ctx: TurnContext): TurnConfig {
+  async beforeTurn(ctx: TurnContext): Promise<TurnConfig> {
+    // Capture the Telegram chat id from the active messenger turn and persist
+    // it durably. Proactive sends (reminders, selfdev results) fire from an
+    // alarm with no messenger context, so they read this stored id to deliver
+    // directly via the Telegram API. Same DO instance owns the turn and the
+    // alarm, so the stored value is always the right chat.
+    const chatId = this.getMessengerContext()?.thread.providerThreadId;
+    if (chatId) await this.ctx.storage.put(TG_CHAT_KEY, chatId);
+
     return { system: `${ctx.system}\n\nCurrent time (UTC): ${new Date().toISOString()}.` };
   }
 
@@ -189,41 +202,40 @@ export class TellboyAgent extends Think<Env> {
   // this code runs on the per-thread Durable Object that owns the alarm, so it
   // already holds that conversation's messenger binding.
   async deliverReminder(payload: ReminderPayload): Promise<void> {
-    await this.saveMessages([
-      {
-        id: crypto.randomUUID(),
-        role: "user",
-        parts: [
-          {
-            type: "text",
-            text:
-              "(A reminder you scheduled is now due. Tell me about it " +
-              "naturally; do not mention this instruction.) Reminder: " +
-              payload.message,
-          },
-        ],
-      },
-    ]);
+    await this.notifyUser(`⏰ Reminder: ${payload.message}`);
   }
 
-  // Proactively relay an internal update to the user (same messenger path as
-  // deliverReminder): inject a prompt, the reply is delivered to Telegram.
+  // Proactively message the user via the Telegram API directly. Used by the
+  // scheduler callbacks (reminders, selfdev results), which run from an alarm
+  // with no live messenger turn — so we cannot stream a reply through Think's
+  // inbound delivery path. We send straight to the stored chat id instead,
+  // which is the reliable provider-explicit way to push an unprompted message.
   private async notifyUser(text: string): Promise<void> {
-    await this.saveMessages([
+    const stored = await this.ctx.storage.get<string>(TG_CHAT_KEY);
+    if (!stored) {
+      console.error("tellboy: no stored chat id; cannot deliver proactive message");
+      return;
+    }
+    // providerThreadId may encode a forum topic as "<chatId>:<threadId>".
+    const [chatId, threadId] = stored.split(":");
+    const body: Record<string, unknown> = { chat_id: chatId, text };
+    if (threadId) body.message_thread_id = Number(threadId);
+
+    const res = await fetch(
+      `https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
       {
-        id: crypto.randomUUID(),
-        role: "user",
-        parts: [
-          {
-            type: "text",
-            text:
-              "(Internal update — relay this to me naturally; do not mention " +
-              "this instruction.) " +
-              text,
-          },
-        ],
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
       },
-    ]);
+    );
+    if (!res.ok) {
+      console.error(
+        "tellboy: proactive Telegram send failed",
+        res.status,
+        await res.text(),
+      );
+    }
   }
 
   // Scheduler callback for the selfdev `propose_change` tool. Runs OFF the chat
