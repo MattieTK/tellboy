@@ -1,0 +1,34 @@
+# Copy to .dev.vars (gitignored) for local `wrangler dev`.
+# For production, set the secrets with `wrangler secret put <NAME>` instead.
+
+# --- Telegram secrets (wrangler secret put in production) ---
+# Bot token from @BotFather.
+TELEGRAM_BOT_TOKEN="123456789:AA-replace-me"
+# Shared secret echoed back by Telegram in the X-Telegram-Bot-Api-Secret-Token
+# header on every webhook delivery. 1-256 chars, only A-Z a-z 0-9 _ - .
+# Set the SAME value here and in setWebhook (the register-webhook script reads it).
+TELEGRAM_WEBHOOK_SECRET="replace-with-a-long-random-string"
+
+# --- Plain vars (these mirror the [vars] block in wrangler.jsonc) ---
+# Workers AI model id. Default is the Kimi flagship; swap to change models.
+MODEL_ID="@cf/moonshotai/kimi-k2.6"
+# AI Gateway id used for caching/observability ("default" works out of the box).
+AI_GATEWAY_ID="default"
+# Your bot's @username (without the @), used for mention detection.
+TELEGRAM_BOT_USERNAME="your_bot"
+
+# --- Plugins (src/plugins) ---
+# Plugins self-enable from these. Each ENABLE_<NAME> flag, when set, overrides
+# auto-detection (truthy: 1/true/yes/on; anything else disables).
+#
+# websearch (Brave Search API): auto-enables when BRAVE_API_KEY is set.
+# Get a key at https://api-dashboard.search.brave.com/ (free tier available).
+BRAVE_API_KEY=""
+# ENABLE_WEBSEARCH="true"   # force on/off regardless of the key
+#
+# reminders (alarms via the Agents SDK scheduler): on by default, no key needed.
+# ENABLE_REMINDERS="false"  # set to disable
+
+# --- Used only by scripts/register-webhook.ts (not read by the Worker) ---
+# Base URL of the deployed Worker, e.g. https://tellboy.<subdomain>.workers.dev
+WORKER_URL=""

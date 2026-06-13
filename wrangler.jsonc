@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tellboy",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "durable_objects": {
+    "bindings": [{ "name": "TellboyAgent", "class_name": "TellboyAgent" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TellboyAgent"] }],
+  "ai": { "binding": "AI" },
+  "vars": {
+    "MODEL_ID": "@cf/moonshotai/kimi-k2.6",
+    "AI_GATEWAY_ID": "default",
+    "TELEGRAM_BOT_USERNAME": "TellboiBot"
+  }
+}
