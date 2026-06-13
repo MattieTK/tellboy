@@ -4,8 +4,22 @@ import telegramMessenger from "@cloudflare/think/messengers/telegram";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import { createWorkersAI } from "workers-ai-provider";
 import { generateText, type LanguageModel, type ToolSet } from "ai";
+import { getSandbox } from "@cloudflare/sandbox";
 import { collectTools } from "./plugins";
 import type { ReminderPayload } from "./plugins/reminders";
+import type { VerifiedChangePayload } from "./plugins/selfdev";
+import { getDefaultBranch, openPullRequest, type GitHubConfig } from "./github";
+
+// Cap noisy command output before it goes into a chat message.
+function truncate(text: string, max = 1500): string {
+  const t = text.trim();
+  return t.length > max ? `${t.slice(0, max)}\n… (truncated)` : t;
+}
+
+// Single-quote a string for `sh -c` so titles with spaces/quotes are safe.
+function shellQuote(s: string): string {
+  return `'${s.replace(/'/g, `'\\''`)}'`;
+}
 
 // --- Compaction policy ---------------------------------------------------
 //
@@ -190,6 +204,140 @@ export class TellboyAgent extends Think<Env> {
         ],
       },
     ]);
+  }
+
+  // Proactively relay an internal update to the user (same messenger path as
+  // deliverReminder): inject a prompt, the reply is delivered to Telegram.
+  private async notifyUser(text: string): Promise<void> {
+    await this.saveMessages([
+      {
+        id: crypto.randomUUID(),
+        role: "user",
+        parts: [
+          {
+            type: "text",
+            text:
+              "(Internal update — relay this to me naturally; do not mention " +
+              "this instruction.) " +
+              text,
+          },
+        ],
+      },
+    ]);
+  }
+
+  // Scheduler callback for the selfdev `propose_change` tool. Runs OFF the chat
+  // turn (clone + install + typecheck is too slow to block a reply). Verifies
+  // the proposed edit in a Sandbox container and only opens a PR if it passes
+  // `pnpm typecheck`; the outcome is relayed to the user via notifyUser().
+  //
+  // PR-only by design — no merge — so a human review stays the gate.
+  async runVerifiedChange(payload: VerifiedChangePayload): Promise<void> {
+    const cfg: GitHubConfig = {
+      token: this.env.GITHUB_TOKEN ?? "",
+      repo: this.env.GITHUB_REPO ?? "",
+    };
+    if (!cfg.token || !cfg.repo) {
+      await this.notifyUser("I couldn't verify that change — GitHub isn't configured.");
+      return;
+    }
+
+    const sandbox = getSandbox(this.env.Sandbox, "selfdev-builder");
+    const repoDir = "/workspace/repo";
+    // Token-bearing remote so both clone and push authenticate. The sandbox is
+    // isolated and ephemeral, so the credential never leaves the container.
+    const authUrl = `https://x-access-token:${cfg.token}@github.com/${cfg.repo}.git`;
+
+    try {
+      const base = await getDefaultBranch(cfg);
+
+      // Fresh checkout each run.
+      await sandbox.exec(`rm -rf ${repoDir}`);
+      await sandbox.gitCheckout(authUrl, {
+        branch: base,
+        targetDir: repoDir,
+        depth: 1,
+      });
+      await sandbox.exec(`git remote set-url origin ${authUrl}`, { cwd: repoDir });
+      await sandbox.exec(`git config user.email "bot@tellboy.local"`, { cwd: repoDir });
+      await sandbox.exec(`git config user.name "tellboy-bot"`, { cwd: repoDir });
+
+      // Apply the proposed files.
+      for (const f of payload.files) {
+        const full = `${repoDir}/${f.path}`;
+        await sandbox.mkdir(full.slice(0, full.lastIndexOf("/")), {
+          recursive: true,
+        });
+        await sandbox.writeFile(full, f.content);
+      }
+
+      // Install (warm pnpm store from the image keeps this fast) + typecheck.
+      const install = await sandbox.exec("pnpm install --frozen-lockfile", {
+        cwd: repoDir,
+        timeout: 240_000,
+      });
+      if (!install.success) {
+        await this.notifyUser(
+          `I couldn't verify the change — \`pnpm install\` failed:\n${truncate(install.stderr || install.stdout)}`,
+        );
+        return;
+      }
+      const check = await sandbox.exec("pnpm typecheck", {
+        cwd: repoDir,
+        timeout: 180_000,
+      });
+      if (!check.success) {
+        await this.notifyUser(
+          `The change does NOT pass \`pnpm typecheck\`, so I did not open a PR. Errors:\n${truncate(`${check.stdout}\n${check.stderr}`)}`,
+        );
+        return;
+      }
+
+      // Commit + push a fresh branch.
+      const branch = `bot/${crypto.randomUUID().slice(0, 8)}`;
+      await sandbox.exec(`git checkout -b ${branch}`, { cwd: repoDir });
+      await sandbox.exec("git add -A", { cwd: repoDir });
+      const commit = await sandbox.exec(
+        `git commit -m ${shellQuote(payload.title)}`,
+        { cwd: repoDir },
+      );
+      if (!commit.success) {
+        await this.notifyUser(
+          "Nothing to commit — the proposed files match the current code.",
+        );
+        return;
+      }
+      const push = await sandbox.exec(`git push origin ${branch}`, {
+        cwd: repoDir,
+      });
+      if (!push.success) {
+        await this.notifyUser(
+          `Verified, but the push failed:\n${truncate(push.stderr)}`,
+        );
+        return;
+      }
+
+      // Open the PR from here (Workers can't run git, but a REST call is fine).
+      const pr = await openPullRequest(cfg, {
+        title: payload.title,
+        body: `${payload.body}\n\n---\n_Verified in a sandbox: \`pnpm typecheck\` passed._`,
+        head: branch,
+        base,
+      });
+      if ("error" in pr) {
+        await this.notifyUser(
+          `Verified and pushed \`${branch}\`, but opening the PR failed: ${pr.error}`,
+        );
+        return;
+      }
+      await this.notifyUser(
+        `Verified (\`pnpm typecheck\` passed) and opened a PR for your review: ${pr.url}`,
+      );
+    } catch (err) {
+      await this.notifyUser(
+        `That change errored during verification: ${String(err instanceof Error ? err.message : err)}`,
+      );
+    }
   }
 
   getMessengers() {

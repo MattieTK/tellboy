@@ -1,75 +1,39 @@
 import { tool, type ToolSet } from "ai";
 import { z } from "zod";
-import { Buffer } from "node:buffer";
 import { envFlag, type Plugin } from "./types";
+import { readSourceFile, listSourceFiles, type GitHubConfig } from "../github";
 import type { TellboyAgent } from "../agent";
 
-// Self-development: lets the bot read its own source and open pull requests
-// against its own repository, so it can propose fixes and improvements.
-//
-// Deliberately PR-only — there is no merge tool. A human reviews and merges,
-// which is the safety gate on a self-modifying agent. Everything goes through
-// the GitHub REST API because Workers cannot shell out to `git`.
+// Self-development: lets the bot read its own source and propose changes to
+// itself. Reads go straight through the GitHub REST API (cheap). Changes are
+// not opened blindly — `propose_change` hands the edit to a Sandbox container
+// that clones the repo, applies the files, and runs `pnpm typecheck` before a
+// PR is opened (see TellboyAgent.runVerifiedChange). A human still reviews and
+// merges the PR: that is the safety gate on self-modification.
 //
 // Enabled when GITHUB_TOKEN and GITHUB_REPO ("owner/name") are both set;
 // force on/off with ENABLE_SELFDEV.
 
-const GITHUB_API = "https://api.github.com";
-
-interface GitHubConfig {
-  token: string;
-  repo: string; // "owner/name"
+export interface VerifiedChangePayload {
+  title: string;
+  body: string;
+  files: Array<{ path: string; content: string }>;
 }
 
-// One place for the headers GitHub requires (notably a User-Agent, without
-// which the API returns 403).
-async function ghFetch(
-  cfg: GitHubConfig,
-  method: string,
-  path: string,
-  body?: unknown,
-): Promise<Response> {
-  return fetch(`${GITHUB_API}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${cfg.token}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "tellboy-bot",
-      ...(body === undefined ? {} : { "Content-Type": "application/json" }),
-    },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-}
-
-async function ghError(res: Response): Promise<string> {
-  const text = await res.text();
-  let message = text;
-  try {
-    message = (JSON.parse(text) as { message?: string }).message ?? text;
-  } catch {
-    // non-JSON body; use raw text
-  }
-  return `GitHub API ${res.status}: ${message}`;
-}
-
-async function getDefaultBranch(cfg: GitHubConfig): Promise<string> {
-  const res = await ghFetch(cfg, "GET", `/repos/${cfg.repo}`);
-  if (!res.ok) throw new Error(await ghError(res));
-  return ((await res.json()) as { default_branch: string }).default_branch;
-}
+// Method on TellboyAgent that the scheduler invokes to run the verification +
+// PR. Kept as a constant so the tool and the method can't drift apart.
+export const VERIFY_CALLBACK = "runVerifiedChange";
 
 export const selfdevPlugin: Plugin = {
   name: "selfdev",
 
   isEnabled(env) {
     return (
-      envFlag(env, "selfdev") ??
-      Boolean(env.GITHUB_TOKEN && env.GITHUB_REPO)
+      envFlag(env, "selfdev") ?? Boolean(env.GITHUB_TOKEN && env.GITHUB_REPO)
     );
   },
 
-  tools(_agent: TellboyAgent, env: Env): ToolSet {
+  tools(agent: TellboyAgent, env: Env): ToolSet {
     const cfg: GitHubConfig = {
       token: env.GITHUB_TOKEN ?? "",
       repo: env.GITHUB_REPO ?? "",
@@ -88,27 +52,7 @@ export const selfdevPlugin: Plugin = {
         }),
         execute: async ({ path }) => {
           try {
-            const branch = await getDefaultBranch(cfg);
-            // Recursive git tree gives every tracked file in one call
-            // (gitignored files like .dev.vars never appear here).
-            const res = await ghFetch(
-              cfg,
-              "GET",
-              `/repos/${cfg.repo}/git/trees/${branch}?recursive=1`,
-            );
-            if (!res.ok) return { error: await ghError(res) };
-            const tree = (await res.json()) as {
-              tree: Array<{ path: string; type: string }>;
-              truncated: boolean;
-            };
-            let files = tree.tree
-              .filter((e) => e.type === "blob")
-              .map((e) => e.path);
-            if (path) files = files.filter((p) => p.startsWith(path));
-            return {
-              files,
-              truncated: tree.truncated || undefined,
-            };
+            return await listSourceFiles(cfg, path);
           } catch (err) {
             return { error: String(err instanceof Error ? err.message : err) };
           }
@@ -127,41 +71,26 @@ export const selfdevPlugin: Plugin = {
         }),
         execute: async ({ path }) => {
           try {
-            const res = await ghFetch(
-              cfg,
-              "GET",
-              `/repos/${cfg.repo}/contents/${encodeURIComponent(path).replace(/%2F/g, "/")}`,
-            );
-            if (res.status === 404) return { error: `Not found: ${path}` };
-            if (!res.ok) return { error: await ghError(res) };
-            const data = (await res.json()) as
-              | { type: "file"; content: string; encoding: string }
-              | Array<{ name: string; type: string }>;
-            if (Array.isArray(data)) {
-              return {
-                error: `${path} is a directory.`,
-                entries: data.map((e) => ({ name: e.name, type: e.type })),
-              };
-            }
-            const content = Buffer.from(data.content, "base64").toString("utf-8");
-            return { path, content };
+            return await readSourceFile(cfg, path);
           } catch (err) {
             return { error: String(err instanceof Error ? err.message : err) };
           }
         },
       }),
 
-      open_pull_request: tool({
+      propose_change: tool({
         description:
-          "Open a pull request against the bot's own repository with one or " +
-          "more file changes. Creates a new branch, commits the files, and " +
-          "opens the PR for human review. Does NOT merge. Use this to propose " +
-          "fixes or improvements to the bot's own code.",
+          "Propose a change to the bot's own code. The change is verified in a " +
+          "sandbox (clone + pnpm typecheck) and, if it passes, opened as a pull " +
+          "request for human review — it is NOT merged. Verification runs in " +
+          "the background; you will get a follow-up message with the PR link or " +
+          "the type errors. Provide the FULL new contents for each file.",
         inputSchema: z.object({
-          title: z.string().min(1).describe("PR title (conventional-commit style)."),
-          body: z
+          title: z
             .string()
-            .describe("PR description: what changed and why."),
+            .min(1)
+            .describe("PR title (conventional-commit style)."),
+          body: z.string().describe("PR description: what changed and why."),
           files: z
             .array(
               z.object({
@@ -172,74 +101,22 @@ export const selfdevPlugin: Plugin = {
               }),
             )
             .min(1)
-            .describe("Files to create or overwrite in the PR."),
+            .describe("Files to create or overwrite."),
         }),
         execute: async ({ title, body, files }) => {
-          try {
-            const base = await getDefaultBranch(cfg);
-
-            // Resolve the base branch's head commit to branch from.
-            const refRes = await ghFetch(
-              cfg,
-              "GET",
-              `/repos/${cfg.repo}/git/ref/heads/${base}`,
-            );
-            if (!refRes.ok) return { error: await ghError(refRes) };
-            const baseSha = (
-              (await refRes.json()) as { object: { sha: string } }
-            ).object.sha;
-
-            // Unique branch name. crypto.randomUUID is available in Workers.
-            const branch = `bot/${crypto.randomUUID().slice(0, 8)}`;
-            const createRef = await ghFetch(
-              cfg,
-              "POST",
-              `/repos/${cfg.repo}/git/refs`,
-              { ref: `refs/heads/${branch}`, sha: baseSha },
-            );
-            if (!createRef.ok) return { error: await ghError(createRef) };
-
-            // Commit each file onto the new branch via the contents API. An
-            // existing file needs its blob sha to be overwritten.
-            for (const file of files) {
-              const apiPath = `/repos/${cfg.repo}/contents/${encodeURIComponent(file.path).replace(/%2F/g, "/")}`;
-              const existing = await ghFetch(
-                cfg,
-                "GET",
-                `${apiPath}?ref=${branch}`,
-              );
-              const sha = existing.ok
-                ? ((await existing.json()) as { sha: string }).sha
-                : undefined;
-              const put = await ghFetch(cfg, "PUT", apiPath, {
-                message: `${title}\n\n(file: ${file.path})`,
-                content: Buffer.from(file.content, "utf-8").toString("base64"),
-                branch,
-                ...(sha ? { sha } : {}),
-              });
-              if (!put.ok) {
-                return {
-                  error: `Failed writing ${file.path}: ${await ghError(put)}`,
-                  branch,
-                };
-              }
-            }
-
-            const prRes = await ghFetch(cfg, "POST", `/repos/${cfg.repo}/pulls`, {
-              title,
-              body,
-              head: branch,
-              base,
-            });
-            if (!prRes.ok) return { error: await ghError(prRes), branch };
-            const pr = (await prRes.json()) as {
-              html_url: string;
-              number: number;
-            };
-            return { ok: true, url: pr.html_url, number: pr.number, branch };
-          } catch (err) {
-            return { error: String(err instanceof Error ? err.message : err) };
-          }
+          const payload: VerifiedChangePayload = { title, body, files };
+          // Run off the chat turn: clone + install + typecheck is too slow to
+          // block a reply. The scheduler fires (~immediately) on the same DO,
+          // and the result is delivered proactively. delaySeconds 1 keeps it
+          // off the current turn without a noticeable wait.
+          await agent.schedule(1, VERIFY_CALLBACK, payload);
+          return {
+            ok: true,
+            status:
+              "queued for sandbox verification — will follow up with the PR " +
+              "link or the type errors",
+            files: files.map((f) => f.path),
+          };
         },
       }),
     };

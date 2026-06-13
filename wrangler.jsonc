@@ -6,9 +6,23 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
   "durable_objects": {
-    "bindings": [{ "name": "TellboyAgent", "class_name": "TellboyAgent" }]
+    "bindings": [
+      { "name": "TellboyAgent", "class_name": "TellboyAgent" },
+      { "name": "Sandbox", "class_name": "Sandbox" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TellboyAgent"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TellboyAgent"] },
+    { "tag": "v2", "new_sqlite_classes": ["Sandbox"] }
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "standard-2",
+      "max_instances": 1
+    }
+  ],
   "ai": { "binding": "AI" },
   "vars": {
     "MODEL_ID": "@cf/moonshotai/kimi-k2.6",

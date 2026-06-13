@@ -22,4 +22,11 @@ interface Env {
   GITHUB_REPO?: string;
   /** Explicit on/off override for the selfdev plugin (e.g. "true"/"false"). */
   ENABLE_SELFDEV?: string;
+
+  /**
+   * Sandbox container binding (Cloudflare Sandbox SDK), used by selfdev to
+   * verify proposed changes (clone + pnpm typecheck) before opening a PR.
+   * Inline import keeps this file an ambient global augmentation.
+   */
+  Sandbox: DurableObjectNamespace<import("@cloudflare/sandbox").Sandbox>;
 }

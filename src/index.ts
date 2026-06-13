@@ -2,6 +2,9 @@ import { routeAgentRequest } from "agents";
 import { WEBHOOK_PATH } from "./agent";
 
 export { TellboyAgent, ThinkMessengerStateAgent } from "./agent";
+// Required by the Sandbox SDK: the container DO class must be exported from the
+// Worker entry. Used by the selfdev plugin's verification step.
+export { Sandbox } from "@cloudflare/sandbox";
 
 export default {
   async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {

@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@chat-adapter/telegram": "^4.30.0",
+    "@cloudflare/sandbox": "0.12.1",
     "@cloudflare/think": "^0.9.0",
     "agents": "^0.16.0",
     "ai": "^6.0.204",
