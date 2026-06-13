@@ -303,17 +303,29 @@ export class TellboyAgent extends Think<Env> {
 
     try {
       const base = await getDefaultBranch(cfg);
+      console.log(
+        "tellboy: runVerifiedChange start",
+        JSON.stringify({ base, files: payload.files.length }),
+      );
 
-      // Fresh checkout each run.
-      await sandbox.exec(`rm -rf ${repoDir}`);
+      // Never let git block on a credential/terminal prompt — that hangs the
+      // whole verification with no error and no timeout. Force non-interactive.
+      await sandbox.setEnvVars({ GIT_TERMINAL_PROMPT: "0", GIT_ASKPASS: "/bin/true" });
+
+      // Fresh checkout each run. Every step is time-bounded so nothing can hang
+      // the run indefinitely (the earlier failure mode).
+      await sandbox.exec(`rm -rf ${repoDir}`, { timeout: 30_000 });
+      console.log("tellboy: cloning repo");
       await sandbox.gitCheckout(authUrl, {
         branch: base,
         targetDir: repoDir,
         depth: 1,
+        cloneTimeoutMs: 90_000,
       });
-      await sandbox.exec(`git remote set-url origin ${authUrl}`, { cwd: repoDir });
-      await sandbox.exec(`git config user.email "bot@tellboy.local"`, { cwd: repoDir });
-      await sandbox.exec(`git config user.name "tellboy-bot"`, { cwd: repoDir });
+      console.log("tellboy: cloned; applying files");
+      await sandbox.exec(`git remote set-url origin ${authUrl}`, { cwd: repoDir, timeout: 15_000 });
+      await sandbox.exec(`git config user.email "bot@tellboy.local"`, { cwd: repoDir, timeout: 15_000 });
+      await sandbox.exec(`git config user.name "tellboy-bot"`, { cwd: repoDir, timeout: 15_000 });
 
       // Apply the proposed files.
       for (const f of payload.files) {
@@ -325,6 +337,7 @@ export class TellboyAgent extends Think<Env> {
       }
 
       // Install (warm pnpm store from the image keeps this fast) + typecheck.
+      console.log("tellboy: pnpm install");
       const install = await sandbox.exec("pnpm install --frozen-lockfile", {
         cwd: repoDir,
         timeout: 240_000,
@@ -335,6 +348,7 @@ export class TellboyAgent extends Think<Env> {
         );
         return;
       }
+      console.log("tellboy: pnpm typecheck");
       const check = await sandbox.exec("pnpm typecheck", {
         cwd: repoDir,
         timeout: 180_000,
@@ -347,12 +361,13 @@ export class TellboyAgent extends Think<Env> {
       }
 
       // Commit + push a fresh branch.
+      console.log("tellboy: typecheck passed; committing + pushing");
       const branch = `bot/${crypto.randomUUID().slice(0, 8)}`;
-      await sandbox.exec(`git checkout -b ${branch}`, { cwd: repoDir });
-      await sandbox.exec("git add -A", { cwd: repoDir });
+      await sandbox.exec(`git checkout -b ${branch}`, { cwd: repoDir, timeout: 30_000 });
+      await sandbox.exec("git add -A", { cwd: repoDir, timeout: 30_000 });
       const commit = await sandbox.exec(
         `git commit -m ${shellQuote(payload.title)}`,
-        { cwd: repoDir },
+        { cwd: repoDir, timeout: 30_000 },
       );
       if (!commit.success) {
         await notify(
@@ -362,6 +377,7 @@ export class TellboyAgent extends Think<Env> {
       }
       const push = await sandbox.exec(`git push origin ${branch}`, {
         cwd: repoDir,
+        timeout: 60_000,
       });
       if (!push.success) {
         await notify(
