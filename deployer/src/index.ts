@@ -1,57 +1,62 @@
-// tellboy-deployer: a deliberately tiny, separate Worker that is the ONLY
-// thing allowed to deploy the tellboy Worker. It exists so the powerful deploy
-// credential never sits in the same isolate as the LLM-driven bot.
+import { WorkerEntrypoint } from "cloudflare:workers";
+
+// tellboy control-plane: a deliberately tiny, separate Worker that is the ONLY
+// thing allowed to perform privileged operations on the tellboy Worker —
+// deploying it, and reading its telemetry. It exists so the powerful
+// credentials never sit in the same isolate as the LLM-driven bot.
 //
-// The bot holds only DEPLOY_SECRET (an opaque capability). It calls POST
-// /deploy here; this Worker — a separate isolate with its own env the bot
-// cannot read — triggers the tellboy repo's deploy workflow. Repo, workflow,
-// and ref are hard-coded, so the caller cannot redirect the deploy anywhere
-// else. The actual Cloudflare API token lives only in GitHub Actions.
+// The bot reaches this Worker through a SERVICE BINDING (Worker-to-Worker RPC),
+// not over HTTP: there is no public endpoint and no shared secret. The binding
+// itself is the capability — the bot's env grants it, but the LLM can't forge
+// it or read this Worker's secrets. The default fetch handler 404s and
+// workers_dev is disabled, so there is no usable public surface at all.
 //
-// Worst case if the bot is fully compromised: an attacker can trigger a
-// redeploy of tellboy from master. Nothing else.
+// Target Worker (service), repo, workflow, ref and account are hard-coded, so
+// neither RPC method takes a target the caller could redirect. Worst case if
+// the bot is fully compromised: redeploy tellboy from master and read tellboy's
+// own logs. Nothing else.
 
 interface Env {
-  /** Shared capability secret; the bot sends this as a bearer token. */
-  DEPLOY_SECRET: string;
   /** GitHub token with actions:write on MattieTK/tellboy ONLY (fine-grained PAT). */
   DEPLOYER_GH_TOKEN: string;
+  /** Cloudflare API token with Workers Observability read on this account. */
+  CF_OBS_TOKEN: string;
 }
 
 const REPO = "MattieTK/tellboy";
 const WORKFLOW = "deploy.yml";
 const REF = "master";
+const ACCOUNT_ID = "240e340132a0949a7f970e9c2d0e1758";
+const SERVICE = "tellboy"; // the Worker whose logs may be read
 
-// Length-independent constant-time compare to avoid leaking the secret via
-// response timing.
-function timingSafeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
-  return diff === 0;
+const LOG_LEVELS = ["error", "warn", "info", "log", "debug"] as const;
+
+interface LogOptions {
+  minutesAgo?: number;
+  limit?: number;
+  level?: string;
+}
+interface LogEvent {
+  timestamp?: number;
+  level?: string;
+  message?: string;
 }
 
-export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const url = new URL(request.url);
+function clamp(n: unknown, min: number, max: number, fallback: number): number {
+  const v = typeof n === "number" && Number.isFinite(n) ? n : fallback;
+  return Math.max(min, Math.min(max, Math.trunc(v)));
+}
 
-    if (request.method !== "POST" || url.pathname !== "/deploy") {
-      return new Response("Not found", { status: 404 });
-    }
-
-    const provided = request.headers.get("authorization") ?? "";
-    const expected = `Bearer ${env.DEPLOY_SECRET}`;
-    if (!env.DEPLOY_SECRET || !timingSafeEqual(provided, expected)) {
-      return new Response("Unauthorized", { status: 401 });
-    }
-
-    // Hard-coded target: the caller has no say over repo / workflow / ref.
+export class TellboyDeployer extends WorkerEntrypoint<Env> {
+  // Trigger the tellboy deploy workflow (GitHub Actions). Hard-coded repo +
+  // workflow + ref — the caller cannot choose what gets deployed.
+  async deploy(): Promise<{ ok: boolean; status?: string; error?: string }> {
     const res = await fetch(
       `https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW}/dispatches`,
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${env.DEPLOYER_GH_TOKEN}`,
+          Authorization: `Bearer ${this.env.DEPLOYER_GH_TOKEN}`,
           Accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": "2022-11-28",
           "User-Agent": "tellboy-deployer",
@@ -60,12 +65,71 @@ export default {
         body: JSON.stringify({ ref: REF }),
       },
     );
+    return res.ok
+      ? { ok: true, status: "deploy triggered — it will roll out via CI shortly" }
+      : { ok: false, error: `deploy trigger failed: HTTP ${res.status}` };
+  }
 
-    if (!res.ok) {
-      return new Response(`deploy trigger failed: ${res.status}`, {
-        status: 502,
+  // Read recent tellboy telemetry via Workers Observability. service is
+  // hard-coded, so the caller can only ever read tellboy's own logs.
+  async readLogs(
+    opts: LogOptions = {},
+  ): Promise<{ events: LogEvent[] } | { error: string }> {
+    if (!this.env.CF_OBS_TOKEN) {
+      return { error: "logs not configured (no CF_OBS_TOKEN on the deployer)" };
+    }
+    const to = Date.now();
+    const from = to - clamp(opts.minutesAgo, 1, 1440, 60) * 60_000;
+    const limit = clamp(opts.limit, 1, 200, 50);
+
+    const filters: Array<Record<string, unknown>> = [
+      { key: "$metadata.service", operation: "eq", type: "string", value: SERVICE },
+    ];
+    if (opts.level && LOG_LEVELS.includes(opts.level as (typeof LOG_LEVELS)[number])) {
+      filters.push({
+        key: "$metadata.level",
+        operation: "eq",
+        type: "string",
+        value: opts.level,
       });
     }
-    return new Response("deploy triggered", { status: 202 });
+
+    const res = await fetch(
+      `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/workers/observability/telemetry/query`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.env.CF_OBS_TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          queryId: "tellboy-selflogs",
+          timeframe: { from, to },
+          view: "events",
+          limit,
+          parameters: { datasets: [], filters, filterCombination: "and" },
+        }),
+      },
+    );
+    if (!res.ok) {
+      return { error: `logs query failed: HTTP ${res.status}` };
+    }
+    const data = (await res.json()) as {
+      result?: { events?: { events?: Array<Record<string, any>> } };
+    };
+    const events: LogEvent[] = (data.result?.events?.events ?? []).map((e) => ({
+      timestamp: e.$metadata?.timestamp ?? e.timestamp,
+      level: e.$metadata?.level,
+      message: e.$metadata?.message ?? e.body,
+    }));
+    return { events };
+  }
+}
+
+// No usable public surface: the bot calls deploy()/readLogs() via the DEPLOYER
+// service binding (RPC). Any direct HTTP gets a 404.
+export default {
+  async fetch(): Promise<Response> {
+    return new Response("Not found", { status: 404 });
   },
 };

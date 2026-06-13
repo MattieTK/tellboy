@@ -30,10 +30,24 @@ interface Env {
    */
   Sandbox: DurableObjectNamespace<import("@cloudflare/sandbox").Sandbox>;
 
-  /** URL of the tellboy-deployer Worker (the narrow deploy proxy). */
-  DEPLOY_URL?: string;
-  /** Opaque capability secret accepted by the deployer's /deploy endpoint. */
-  DEPLOY_SECRET?: string;
-  /** Explicit on/off override for the deploy plugin (e.g. "true"/"false"). */
+  /**
+   * Service binding (RPC) to the tellboy-deployer control-plane Worker. The
+   * bot can deploy itself and read its own telemetry through this, without
+   * ever holding the underlying Cloudflare/GitHub credentials. Structural type
+   * mirrors the deployer's WorkerEntrypoint methods (see deployer/src/index.ts).
+   */
+  DEPLOYER?: {
+    deploy(): Promise<{ ok: boolean; status?: string; error?: string }>;
+    readLogs(opts?: {
+      minutesAgo?: number;
+      limit?: number;
+      level?: string;
+    }): Promise<
+      | { events: Array<{ timestamp?: number; level?: string; message?: string }> }
+      | { error: string }
+    >;
+  };
+  /** Explicit on/off override for the deploy + logs (selfops) plugins. */
   ENABLE_DEPLOY?: string;
+  ENABLE_LOGS?: string;
 }

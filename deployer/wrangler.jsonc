@@ -3,5 +3,8 @@
   "name": "tellboy-deployer",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-01",
-  "observability": { "enabled": true }
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // No public URL: reachable only via the tellboy Worker's service binding.
+  "workers_dev": false
 }

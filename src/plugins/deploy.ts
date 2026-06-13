@@ -4,20 +4,18 @@ import { envFlag, type Plugin } from "./types";
 import type { TellboyAgent } from "../agent";
 
 // Lets the bot REQUEST a deploy of itself without holding any deploy credential.
-// It calls the separate tellboy-deployer Worker (DEPLOY_URL) with an opaque
-// capability secret (DEPLOY_SECRET). That Worker — a different isolate the bot
-// cannot read into — holds the token that triggers the real deploy, and it
-// only ever deploys tellboy. So the bot can ship a merged change, but a
-// compromised bot can do nothing worse than redeploy itself.
+// It calls the tellboy-deployer control-plane Worker over a service binding
+// (env.DEPLOYER, Worker-to-Worker RPC) — no HTTP, no secret. That Worker (a
+// separate isolate the bot cannot read into) holds the token that triggers the
+// real deploy, and only ever deploys tellboy. So the bot can ship a merged
+// change, but a compromised bot can do nothing worse than redeploy itself.
 //
-// Enabled when DEPLOY_URL and DEPLOY_SECRET are both set; ENABLE_DEPLOY overrides.
+// Enabled when the DEPLOYER binding is present; ENABLE_DEPLOY overrides.
 export const deployPlugin: Plugin = {
   name: "deploy",
 
   isEnabled(env) {
-    return (
-      envFlag(env, "deploy") ?? Boolean(env.DEPLOY_URL && env.DEPLOY_SECRET)
-    );
+    return envFlag(env, "deploy") ?? Boolean(env.DEPLOYER);
   },
 
   tools(_agent: TellboyAgent, env: Env): ToolSet {
@@ -29,20 +27,8 @@ export const deployPlugin: Plugin = {
           "this bot — nothing else. Returns once the deploy has been triggered.",
         inputSchema: z.object({}),
         execute: async () => {
-          if (!env.DEPLOY_URL || !env.DEPLOY_SECRET) {
-            return { error: "Deploy is not configured." };
-          }
-          const res = await fetch(`${env.DEPLOY_URL.replace(/\/$/, "")}/deploy`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${env.DEPLOY_SECRET}` },
-          });
-          if (!res.ok) {
-            return { error: `Deploy trigger failed (HTTP ${res.status}).` };
-          }
-          return {
-            ok: true,
-            status: "deploy triggered — it will roll out via CI shortly",
-          };
+          if (!env.DEPLOYER) return { error: "Deploy is not configured." };
+          return env.DEPLOYER.deploy();
         },
       }),
     };

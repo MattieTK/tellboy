@@ -5,6 +5,7 @@ import { remindersPlugin } from "./reminders";
 import { websearchPlugin } from "./websearch";
 import { selfdevPlugin } from "./selfdev";
 import { deployPlugin } from "./deploy";
+import { logsPlugin } from "./logs";
 
 // Register plugins here. Order matters only on tool-name collisions (later
 // wins via the spread below), so keep tool names unique across plugins.
@@ -13,6 +14,7 @@ const REGISTRY: readonly Plugin[] = [
   websearchPlugin,
   selfdevPlugin,
   deployPlugin,
+  logsPlugin,
 ];
 
 /**
