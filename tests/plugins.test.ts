@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { envFlag } from "../src/plugins/types";
 import { collectTools, enabledPluginNames } from "../src/plugins";
+import { unsafeProposedPaths } from "../src/plugins/selfdev";
 
 // Guards which capabilities the bot exposes. A regression here could silently
 // drop tools (bot loses abilities) or expose them when misconfigured.
@@ -66,6 +67,46 @@ describe("plugin enablement", () => {
     expect(
       enabledPluginNames({ ENABLE_REMINDERS: "false" } as unknown as Env),
     ).not.toContain("reminders");
+  });
+});
+
+describe("unsafeProposedPaths (selfdev self-edit guard)", () => {
+  it("blocks the deploy machinery and git internals", () => {
+    expect(
+      unsafeProposedPaths([
+        ".github/workflows/deploy.yml",
+        "deployer/src/index.ts",
+        ".git/hooks/pre-push",
+        ".git/config",
+        ".git",
+      ]),
+    ).toEqual([
+      ".github/workflows/deploy.yml",
+      "deployer/src/index.ts",
+      ".git/hooks/pre-push",
+      ".git/config",
+      ".git",
+    ]);
+  });
+
+  it("blocks absolute paths and ones that escape the tree via ..", () => {
+    expect(unsafeProposedPaths(["/etc/passwd"])).toEqual(["/etc/passwd"]);
+    expect(unsafeProposedPaths(["../secrets.txt"])).toEqual(["../secrets.txt"]);
+    expect(unsafeProposedPaths(["src/../../x"])).toEqual(["src/../../x"]);
+    expect(unsafeProposedPaths(["src\\..\\..\\x"])).toEqual(["src\\..\\..\\x"]);
+  });
+
+  it("allows ordinary in-tree source paths", () => {
+    expect(
+      unsafeProposedPaths([
+        "src/agent.ts",
+        "src/plugins/selfdev.ts",
+        "tests/rich.test.ts",
+        "README.md",
+        // a filename that merely contains the substring ".git" is fine
+        "src/gitignore-notes.md",
+      ]),
+    ).toEqual([]);
   });
 });
 

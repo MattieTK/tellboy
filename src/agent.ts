@@ -449,6 +449,10 @@ export class TellboyAgent extends Think<Env> {
       await sandbox.exec(`git remote set-url origin ${authUrl}`, { cwd: repoDir, timeout: 15_000 });
       await sandbox.exec(`git config user.email "bot@tellboy.local"`, { cwd: repoDir, timeout: 15_000 });
       await sandbox.exec(`git config user.name "tellboy-bot"`, { cwd: repoDir, timeout: 15_000 });
+      // Defence-in-depth: never run repo git hooks in the sandbox. Even if a
+      // hook file slipped past unsafeProposedPaths (selfdev.ts), it must not
+      // execute at commit/push time, where the token-bearing remote URL lives.
+      await sandbox.exec(`git config core.hooksPath /dev/null`, { cwd: repoDir, timeout: 15_000 });
 
       // Apply the proposed files.
       for (const f of payload.files) {
