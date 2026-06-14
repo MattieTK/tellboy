@@ -57,4 +57,12 @@ interface Env {
   /** Explicit on/off override for the deploy + logs (selfops) plugins. */
   ENABLE_DEPLOY?: string;
   ENABLE_LOGS?: string;
+
+  /**
+   * Kill switch for Bot API 10.1 Rich Messages (sendRichMessage). Rich delivery
+   * is ON by default; set this to a falsy value ("false"/"0"/"off") to force the
+   * legacy HTML/MarkdownV2 path. Rich sends fall back automatically on failure,
+   * so this only chooses which format is attempted first.
+   */
+  ENABLE_RICH_MESSAGES?: string;
 }

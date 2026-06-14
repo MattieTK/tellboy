@@ -6,16 +6,26 @@ import {
   type ChatResponseResult,
 } from "@cloudflare/think";
 import { defineMessengers, ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
-import telegramMessenger from "@cloudflare/think/messengers/telegram";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import { createWorkersAI } from "workers-ai-provider";
 import { generateText, type LanguageModel, type ToolSet } from "ai";
 import { getSandbox } from "@cloudflare/sandbox";
 import { collectTools } from "./plugins";
+import { envFlag } from "./plugins/types";
 import type { ReminderPayload } from "./plugins/reminders";
 import type { VerifiedChangePayload } from "./plugins/selfdev";
 import { getDefaultBranch, openPullRequest, type GitHubConfig } from "./github";
 import { formatForTelegram, type TelegramParseMode } from "./format";
+import { RICH_MESSAGE_CHAR_LIMIT, toInputRichMessage } from "./rich";
+import { richTelegramMessenger } from "./rich-adapter";
+
+// Whether to deliver replies as Bot API 10.1 Rich Messages. On by default; set
+// ENABLE_RICH_MESSAGES to a falsy value ("false"/"0"/"off") as a kill switch.
+// Every rich send degrades to the HTML/MarkdownV2 path on failure, so this only
+// chooses which format is attempted first.
+function richMessagesEnabled(env: Env): boolean {
+  return envFlag(env, "rich_messages") ?? true;
+}
 
 // Cap noisy command output before it goes into a chat message.
 function truncate(text: string, max = 1500): string {
@@ -308,12 +318,55 @@ export class TellboyAgent extends Think<Env> {
       JSON.stringify({ chat, thread, fromPayload: chatId !== undefined }),
     );
 
-    // Prefer HTML (format.ts escapes safely and renders markdown/code blocks).
-    // If Telegram rejects the HTML for any reason, fall back to plain text so a
-    // formatting edge case can never silently drop the message.
+    // Three-tier delivery, each tier the fallback for the one above:
+    //   1. Rich Message (Bot API 10.1) — native tables/headings/lists from the
+    //      model's own GFM, when enabled.
+    //   2. HTML (format.ts) — escaped markdown/code blocks; ASCII tables.
+    //   3. Plain text — last resort so a formatting edge case never drops a
+    //      message (this path runs in alarm callbacks where silence is the bug).
+    if (richMessagesEnabled(this.env)) {
+      if (await this.sendTelegramRich(chat, thread, text)) return;
+    }
     const html = formatForTelegram(text);
     const delivered = await this.sendTelegram(chat, thread, html.text, html.parseMode);
     if (!delivered) await this.sendTelegram(chat, thread, text);
+  }
+
+  // Send a proactive message as a Bot API 10.1 Rich Message (sendRichMessage).
+  // The model's Markdown is passed through verbatim (Telegram's Rich Markdown is
+  // GitHub Flavored Markdown), so tables/headings/lists render natively. Returns
+  // false (never throws) on any failure so notifyUser can fall back — this runs
+  // inside scheduled-alarm callbacks where a throw retry-loops and jams the DO.
+  private async sendTelegramRich(
+    chatId: string,
+    threadId: number | undefined,
+    markdown: string,
+  ): Promise<boolean> {
+    // Skip empty or over-limit bodies so we fall back instead of eating a 400.
+    if (!markdown.trim() || markdown.length > RICH_MESSAGE_CHAR_LIMIT) return false;
+    const body: Record<string, unknown> = {
+      chat_id: chatId,
+      rich_message: toInputRichMessage(markdown),
+    };
+    if (threadId !== undefined) body.message_thread_id = threadId;
+
+    try {
+      const res = await fetch(
+        `https://api.telegram.org/bot${this.env.TELEGRAM_BOT_TOKEN}/sendRichMessage`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      if (!res.ok) {
+        console.error("tellboy: rich send failed", res.status, await res.text());
+      }
+      return res.ok;
+    } catch (err) {
+      console.error("tellboy: rich send threw", String(err));
+      return false;
+    }
   }
 
   private async sendTelegram(
@@ -496,11 +549,16 @@ export class TellboyAgent extends Think<Env> {
 
   getMessengers() {
     return defineMessengers({
-      telegram: telegramMessenger({
+      // richTelegramMessenger is a drop-in for Think's telegramMessenger that
+      // delivers Bot API 10.1 Rich Messages on the streamed reply path (native
+      // tables/headings/lists from the model's GFM). It degrades to MarkdownV2
+      // automatically, and the `rich` flag is a kill switch (ENABLE_RICH_MESSAGES).
+      telegram: richTelegramMessenger({
+        rich: richMessagesEnabled(this.env),
         token: this.env.TELEGRAM_BOT_TOKEN,
         userName: this.env.TELEGRAM_BOT_USERNAME,
         // Verified back via the X-Telegram-Bot-Api-Secret-Token header on every
-        // webhook delivery. telegramMessenger throws in webhook mode if this is
+        // webhook delivery. The messenger throws in webhook mode if this is
         // unset and verifyWebhook is not explicitly false.
         secretToken: this.env.TELEGRAM_WEBHOOK_SECRET,
         // Must match the registered webhook URL's pathname exactly (see the
