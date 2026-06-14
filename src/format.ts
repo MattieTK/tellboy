@@ -31,12 +31,15 @@
  *   - Entities must not be nested inside <code> or <pre>; the textual content
  *     of those elements is still escaped, but no child tags are emitted.
  *
- * Note on Rich Messages (Bot API 10.1 `sendRichMessage` / `RichBlock*` /
- * `RichText*`): those are NOT used here. Our delivery stack
- * (@cloudflare/think -> @chat-adapter/telegram) only calls `sendMessage` /
- * `editMessageText`, and never `sendRichMessage`, so the structured
- * Rich Message API is unreachable today. Producing well-formed HTML is the
- * highest-fidelity option the current stack can deliver.
+ * Relationship to Rich Messages (Bot API 10.1 `sendRichMessage`): rich delivery
+ * is now the PRIMARY path — `src/rich.ts` passes the model's Markdown to
+ * `sendRichMessage`, which renders native tables/headings/lists server-side (see
+ * `src/rich-adapter.ts` for the streamed path, `notifyUser` for the proactive
+ * path). This HTML converter is the FALLBACK: it is used when a rich send is
+ * rejected or disabled (`ENABLE_RICH_MESSAGES`), and as the second tier before
+ * plain text. HTML has the smaller escaping surface, but cannot express tables
+ * (it degrades them to an ASCII block in `<pre>`), which is exactly what the
+ * rich path now avoids.
  */
 
 /** Telegram parse mode values relevant to text delivery. */

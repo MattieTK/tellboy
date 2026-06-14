@@ -85,25 +85,45 @@ messenger. For proactive sends (reminders, background results) call the Telegram
 Bot API directly (`sendMessage`) with a known chat id — see `notifyUser` in
 `src/agent.ts`.
 
-### Telegram formatting: HTML via a local adapter patch
+### Telegram formatting: Rich Messages, with HTML/MarkdownV2 fallback
 
-Replies render rich text via **HTML**, enabled by a local pnpm patch to
-`@chat-adapter/telegram` (`patches/@chat-adapter__telegram.patch`, wired in
-`pnpm-workspace.yaml`). The patch overrides the converter's `fromMarkdown` to
-emit Telegram HTML (a port of `src/format.ts`) and makes `toBotApiParseMode`
-send `parse_mode: HTML`. This unlocks entities MarkdownV2 didn't give us
-(`tg-spoiler`, `tg-emoji`, expandable blockquote). The adapter still falls back
-to plain text on any parse error, so a bad render degrades gracefully.
+Replies are delivered as **Bot API 10.1 Rich Messages** (`sendRichMessage`),
+which render native tables, headings, ordered/task lists, blockquotes and
+dividers — formatting the legacy parse modes can't express. The send side is
+not the structured `RichBlock` tree it looks like: `InputRichMessage` carries
+the body as a single `markdown` string, and Telegram's "Rich Markdown" *is*
+GitHub Flavored Markdown — exactly what the model already emits. So the model's
+reply passes through verbatim (`src/rich.ts`, `toInputRichMessage`); there is no
+converter to maintain on the rich path.
 
-**Don't drop the patch** (`pnpm install` re-applies it; keep the `patches/`
-file and the `pnpm-workspace.yaml` entry committed). If you bump the adapter
-version, regenerate the patch (`pnpm patch @chat-adapter/telegram`). The model
-emits Markdown; the adapter converts it — so format with normal Markdown, not
-raw HTML.
+Two delivery paths use it, both degrading gracefully (never throwing in the
+alarm-driven path):
 
-True Rich Messages (`sendRichMessage` + `RichBlock*` layout, native tables)
-remain out of scope — they need a new adapter send method and structured input
-the LLM doesn't produce. HTML covers the rich-text cases.
+- **Streamed inbound replies** — `src/rich-adapter.ts` subclasses
+  `@chat-adapter/telegram`'s `TelegramAdapter` and overrides `postMessage`
+  (→ `sendRichMessage`) and `stream` (→ `sendRichMessageDraft` for the live
+  animated preview, finalised via `sendRichMessage`). `richTelegramMessenger`
+  wires it in via `chatSdkMessenger`, replacing Think's `telegramMessenger`.
+  Because the base `stream()` finalises through `this.postMessage`, a failed
+  rich draft still lands on a rich final message; a rejected rich send falls
+  back to the base MarkdownV2 path.
+- **Proactive sends** (reminders, selfdev results) — `notifyUser` in
+  `src/agent.ts` tries `sendRichMessage`, then HTML (`src/format.ts`), then
+  plain text.
+
+`ENABLE_RICH_MESSAGES` is a kill switch (rich is **on by default**; set it to
+`false`/`0`/`off` to force the HTML/MarkdownV2 path). `src/format.ts` remains as
+the HTML fallback renderer — keep it and its tests.
+
+History note: an earlier approach rendered HTML via a local pnpm patch to the
+adapter (`patches/@chat-adapter__telegram.patch` + `pnpm-workspace.yaml`); it
+was **reverted** (commit `91153d7`) and no longer exists. Don't reintroduce a
+`dist` patch — the in-repo subclass in `rich-adapter.ts` is the supported
+extension point (typed, no line-number coupling, covered by the test gate). If
+you bump the adapter major version, re-check the handful of base-class internals
+`rich-adapter.ts` reaches through `this.internals` (e.g. `telegramFetch`,
+`resolveThreadId`, `parseTelegramMessage`) — the rich path try/catches into the
+base, so a rename degrades rather than breaks, but fix it.
 
 ### The bot holds no deploy/observability credential
 
