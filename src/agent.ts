@@ -37,6 +37,25 @@ function shellQuote(s: string): string {
 // used to deliver proactive messages (reminders, selfdev results).
 const TG_CHAT_KEY = "tg_chat_id";
 
+// The messenger encodes Telegram thread ids as "telegram:<chatId>[:<topicId>]"
+// (see @chat-adapter/telegram encodeThreadId). Parse out the real chat id (and
+// forum topic) for direct Bot API sends — using the raw value as chat_id gets
+// a "chat not found" 400.
+function parseTelegramThread(providerThreadId: string): {
+  chatId: string;
+  messageThreadId?: number;
+} {
+  const parts = providerThreadId.split(":");
+  if (parts[0] === "telegram" && parts.length >= 2) {
+    return {
+      chatId: parts[1],
+      messageThreadId: parts[2] ? Number(parts[2]) : undefined,
+    };
+  }
+  // Fallback: an already-bare id.
+  return { chatId: providerThreadId };
+}
+
 // Brief "what I'm doing" notes sent the moment the model invokes a slow or
 // async tool, so the chat doesn't look frozen while it works (Poke-style).
 // Only slow/async tools are listed; fast ones reply quickly enough on their own.
@@ -191,8 +210,8 @@ export class TellboyAgent extends Think<Env> {
       JSON.stringify({ tool: ctx.toolName, hasStatus: !!status, hasChatId: !!chatId }),
     );
     if (!status || !chatId) return;
-    const [chat, threadId] = chatId.split(":");
-    void this.sendTelegram(chat, threadId ? Number(threadId) : undefined, status);
+    const { chatId: chat, messageThreadId: thread } = parseTelegramThread(chatId);
+    void this.sendTelegram(chat, thread, status);
   }
 
   configureSession(session: Session): Session {
@@ -287,9 +306,7 @@ export class TellboyAgent extends Think<Env> {
       console.error("tellboy: no chat id (payload or stored); cannot deliver proactive message");
       return;
     }
-    // providerThreadId may encode a forum topic as "<chatId>:<threadId>".
-    const [chat, threadId] = target.split(":");
-    const thread = threadId ? Number(threadId) : undefined;
+    const { chatId: chat, messageThreadId: thread } = parseTelegramThread(target);
     console.log(
       "tellboy: proactive send",
       JSON.stringify({ chat, thread, fromPayload: chatId !== undefined }),
