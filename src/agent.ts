@@ -3,7 +3,7 @@ import {
   Session,
   type TurnContext,
   type TurnConfig,
-  type ToolCallContext,
+  type ChatResponseResult,
 } from "@cloudflare/think";
 import { defineMessengers, ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 import telegramMessenger from "@cloudflare/think/messengers/telegram";
@@ -55,20 +55,6 @@ function parseTelegramThread(providerThreadId: string): {
   // Fallback: an already-bare id.
   return { chatId: providerThreadId };
 }
-
-// Brief "what I'm doing" notes sent the moment the model invokes a slow or
-// async tool, so the chat doesn't look frozen while it works (Poke-style).
-// Only slow/async tools are listed; fast ones reply quickly enough on their own.
-const TOOL_STATUS: Record<string, string> = {
-  web_search: "🔎 Searching the web…",
-  read_source: "📖 Reading my own code…",
-  list_source: "📂 Looking through my files…",
-  read_logs: "📋 Checking my logs…",
-  propose_change:
-    "🛠️ Working on that change — I'll verify it in a sandbox and follow up with the PR.",
-  merge_pull_request: "🔀 Merging that PR…",
-  request_deploy: "🚀 Deploying myself…",
-};
 
 // --- Compaction policy ---------------------------------------------------
 //
@@ -127,15 +113,13 @@ export class TellboyAgent extends Think<Env> {
   // if you want the reasoning surfaced.
   sendReasoning = false;
 
-  // Telegram chat id for the turn in progress, captured in beforeTurn. Used by
-  // beforeToolCall to send status messages without relying on the messenger
-  // context being available inside the tool-call hook.
-  private lastChatId?: string;
+  // True while a chat turn (and its streamed reply) is in progress. Out-of-band
+  // messages (reminders, selfdev results) are queued during this window so they
+  // don't interrupt or cut off the streaming reply — see enqueueOrSend.
+  private turnActive = false;
 
-  // Status messages already sent this turn, so repeated tool calls (e.g. three
-  // web searches in one turn) don't spam the user with duplicate "🔎 Searching…".
-  // Reset at the start of each turn in beforeTurn.
-  private announcedStatuses = new Set<string>();
+  // Messages deferred while a reply was streaming; flushed in onChatResponse.
+  private outboundQueue: Array<{ text: string; chatId?: string }> = [];
 
   getModel(): LanguageModel {
     const workersai = createWorkersAI({
@@ -163,7 +147,6 @@ export class TellboyAgent extends Think<Env> {
       "Format replies with Telegram-friendly Markdown where it improves readability: **bold** for emphasis, `inline code` for code, IDs, paths and commands, ```fenced blocks``` for multi-line code, bullet or numbered lists for steps, > blockquotes, and ||spoilers|| to hide surprises. Keep it light — short answers usually need no formatting, and don't over-use it.",
       "When the user shares a durable fact about themselves (preferences, names, ongoing projects, recurring tasks), remember it in your memory so future replies stay consistent.",
       "You can inspect, improve, and ship your own code. Use read_source/list_source to read your source; propose_change to open a pull request with a fix or improvement (it is verified by typecheck and tests in a sandbox before the PR opens); list_pull_requests to see your open proposals; and merge_pull_request to merge one of your own once it's ready (merging deploys it). When asked to fix or improve yourself, use these tools rather than claiming you cannot modify your own code.",
-      "When you need a tool (e.g. web search), just call it — do NOT write a lead-in like \"let me look that up…\" or otherwise announce it; the user already sees a status indicator while it runs. Gather what you need first, then send ONE complete reply. Never end a message mid-sentence to go use a tool.",
       "If you are unsure or lack information, say so plainly rather than guessing.",
     ].join(" ");
   }
@@ -182,8 +165,12 @@ export class TellboyAgent extends Think<Env> {
   // The trade-off is a small prefix-cache cost — acceptable for a personal
   // assistant, and the live conversation below the system prompt still caches.
   beforeTurn(ctx: TurnContext): TurnConfig {
-    // New turn: clear the per-turn status dedupe.
-    this.announcedStatuses = new Set();
+    // A reply is now streaming: hold out-of-band sends until it finishes so we
+    // never interrupt/cut off the streamed message (see enqueueOrSend).
+    this.turnActive = true;
+    // Drop anything left from a turn that ended without onChatResponse (e.g.
+    // aborted), so the queue can never get stuck and swallow future sends.
+    this.outboundQueue = [];
     // Best-effort capture of the Telegram chat id for proactive sends
     // (reminders, selfdev results read it from storage when they fire from an
     // alarm with no messenger context). This MUST NOT block or fail the turn:
@@ -193,7 +180,6 @@ export class TellboyAgent extends Think<Env> {
     try {
       const chatId = this.getMessengerContext()?.thread.providerThreadId;
       if (chatId) {
-        this.lastChatId = chatId;
         void this.ctx.storage
           .put(TG_CHAT_KEY, chatId)
           .catch((e) => console.error("tellboy: chat-id capture failed", e));
@@ -205,19 +191,23 @@ export class TellboyAgent extends Think<Env> {
     return { system: `${ctx.system}\n\nCurrent time (UTC): ${new Date().toISOString()}.` };
   }
 
-  // Tell the user what's happening the moment a slow/async tool starts, so the
-  // chat doesn't look frozen. Sends a separate, persisted Telegram message (not
-  // the ephemeral streaming draft), using the live messenger context's chat id.
-  // Fire-and-forget — never block the tool; sendTelegram already swallows errors.
-  beforeToolCall(ctx: ToolCallContext): void {
-    const status = TOOL_STATUS[ctx.toolName];
-    if (!status || this.announcedStatuses.has(status)) return;
-    const chatId =
-      this.lastChatId ?? this.getMessengerContext()?.thread.providerThreadId;
-    if (!chatId) return;
-    this.announcedStatuses.add(status);
-    const { chatId: chat, messageThreadId: thread } = parseTelegramThread(chatId);
-    void this.sendTelegram(chat, thread, status);
+  // Turn (and its streamed reply) is done: release the queue so any deferred
+  // out-of-band messages go out now, after the reply — never during it.
+  async onChatResponse(_result: ChatResponseResult): Promise<void> {
+    this.turnActive = false;
+    const queued = this.outboundQueue;
+    this.outboundQueue = [];
+    for (const m of queued) await this.notifyUser(m.text, m.chatId);
+  }
+
+  // Send a message, or queue it if a reply is currently streaming so it waits
+  // for the stream to finish rather than racing/cutting it off.
+  private async enqueueOrSend(text: string, chatId?: string): Promise<void> {
+    if (this.turnActive) {
+      this.outboundQueue.push({ text, chatId });
+    } else {
+      await this.notifyUser(text, chatId);
+    }
   }
 
   configureSession(session: Session): Session {
@@ -293,7 +283,7 @@ export class TellboyAgent extends Think<Env> {
         "tellboy: deliverReminder fired",
         JSON.stringify({ hasChatId: payload.chatId !== undefined }),
       );
-      await this.notifyUser(`⏰ Reminder: ${payload.message}`, payload.chatId);
+      await this.enqueueOrSend(`⏰ Reminder: ${payload.message}`, payload.chatId);
     } catch (err) {
       console.error("tellboy: deliverReminder failed (swallowed)", String(err));
     }
@@ -365,7 +355,7 @@ export class TellboyAgent extends Think<Env> {
   // PR-only by design — no merge — so a human review stays the gate.
   async runVerifiedChange(payload: VerifiedChangePayload): Promise<void> {
     // Deliver results to the chat captured when the change was proposed.
-    const notify = (t: string) => this.notifyUser(t, payload.chatId);
+    const notify = (t: string) => this.enqueueOrSend(t, payload.chatId);
     const cfg: GitHubConfig = {
       token: this.env.GITHUB_TOKEN ?? "",
       repo: this.env.GITHUB_REPO ?? "",
