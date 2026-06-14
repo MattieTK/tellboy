@@ -1,4 +1,10 @@
-import { Think, Session, type TurnContext, type TurnConfig } from "@cloudflare/think";
+import {
+  Think,
+  Session,
+  type TurnContext,
+  type TurnConfig,
+  type ToolCallContext,
+} from "@cloudflare/think";
 import { defineMessengers, ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 import telegramMessenger from "@cloudflare/think/messengers/telegram";
 import { createCompactFunction } from "agents/experimental/memory/utils";
@@ -30,6 +36,20 @@ function shellQuote(s: string): string {
 // Durable-storage key for the Telegram chat id captured during inbound turns,
 // used to deliver proactive messages (reminders, selfdev results).
 const TG_CHAT_KEY = "tg_chat_id";
+
+// Brief "what I'm doing" notes sent the moment the model invokes a slow or
+// async tool, so the chat doesn't look frozen while it works (Poke-style).
+// Only slow/async tools are listed; fast ones reply quickly enough on their own.
+const TOOL_STATUS: Record<string, string> = {
+  web_search: "🔎 Searching the web…",
+  read_source: "📖 Reading my own code…",
+  list_source: "📂 Looking through my files…",
+  read_logs: "📋 Checking my logs…",
+  propose_change:
+    "🛠️ Working on that change — I'll verify it in a sandbox and follow up with the PR.",
+  merge_pull_request: "🔀 Merging that PR…",
+  request_deploy: "🚀 Deploying myself…",
+};
 
 // --- Compaction policy ---------------------------------------------------
 //
@@ -150,6 +170,19 @@ export class TellboyAgent extends Think<Env> {
     }
 
     return { system: `${ctx.system}\n\nCurrent time (UTC): ${new Date().toISOString()}.` };
+  }
+
+  // Tell the user what's happening the moment a slow/async tool starts, so the
+  // chat doesn't look frozen. Sends a separate, persisted Telegram message (not
+  // the ephemeral streaming draft), using the live messenger context's chat id.
+  // Fire-and-forget — never block the tool; sendTelegram already swallows errors.
+  beforeToolCall(ctx: ToolCallContext): void {
+    const status = TOOL_STATUS[ctx.toolName];
+    if (!status) return;
+    const chatId = this.getMessengerContext()?.thread.providerThreadId;
+    if (!chatId) return;
+    const [chat, threadId] = chatId.split(":");
+    void this.sendTelegram(chat, threadId ? Number(threadId) : undefined, status);
   }
 
   configureSession(session: Session): Session {
