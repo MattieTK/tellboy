@@ -108,6 +108,11 @@ export class TellboyAgent extends Think<Env> {
   // if you want the reasoning surfaced.
   sendReasoning = false;
 
+  // Telegram chat id for the turn in progress, captured in beforeTurn. Used by
+  // beforeToolCall to send status messages without relying on the messenger
+  // context being available inside the tool-call hook.
+  private lastChatId?: string;
+
   getModel(): LanguageModel {
     const workersai = createWorkersAI({
       binding: this.env.AI,
@@ -161,6 +166,7 @@ export class TellboyAgent extends Think<Env> {
     try {
       const chatId = this.getMessengerContext()?.thread.providerThreadId;
       if (chatId) {
+        this.lastChatId = chatId;
         void this.ctx.storage
           .put(TG_CHAT_KEY, chatId)
           .catch((e) => console.error("tellboy: chat-id capture failed", e));
@@ -178,9 +184,13 @@ export class TellboyAgent extends Think<Env> {
   // Fire-and-forget — never block the tool; sendTelegram already swallows errors.
   beforeToolCall(ctx: ToolCallContext): void {
     const status = TOOL_STATUS[ctx.toolName];
-    if (!status) return;
-    const chatId = this.getMessengerContext()?.thread.providerThreadId;
-    if (!chatId) return;
+    const chatId =
+      this.lastChatId ?? this.getMessengerContext()?.thread.providerThreadId;
+    console.log(
+      "tellboy: beforeToolCall",
+      JSON.stringify({ tool: ctx.toolName, hasStatus: !!status, hasChatId: !!chatId }),
+    );
+    if (!status || !chatId) return;
     const [chat, threadId] = chatId.split(":");
     void this.sendTelegram(chat, threadId ? Number(threadId) : undefined, status);
   }
