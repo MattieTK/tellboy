@@ -29,6 +29,8 @@ export async function ghFetch(
       ...(body === undefined ? {} : { "Content-Type": "application/json" }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
+    // Bound it so a hung GitHub request can't stall the chat turn it runs in.
+    signal: AbortSignal.timeout(15_000),
   });
 }
 

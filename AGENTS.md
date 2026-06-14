@@ -55,6 +55,16 @@ tight ~13s loop**, which jams the Durable Object — no chat replies, just
 they await, like `sendTelegram`) in try/catch that logs and swallows. Dropping a
 reminder is far better than wedging the bot.
 
+### External fetches in tools must have a timeout
+
+A tool's `execute` runs inside the chat turn. A `fetch()` with no timeout that
+hangs (slow Brave/GitHub response) hangs the tool, which stalls the turn — the
+stall-watchdog cancels it ~30s later and the user gets **no reply** (it looks
+frozen). Always pass `signal: AbortSignal.timeout(ms)` on outbound fetches in
+tools/turns and return a clean error on failure, so the model can respond
+instead of hanging. See `web_search` (`src/plugins/websearch.ts`) and `ghFetch`
+(`src/github.ts`).
+
 ### `beforeTurn` must not block on I/O
 
 `beforeTurn` runs before the model produces any output. If it `await`s

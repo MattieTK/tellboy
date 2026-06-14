@@ -61,26 +61,41 @@ export const websearchPlugin: Plugin = {
           url.searchParams.set("q", query);
           url.searchParams.set("count", String(count));
 
-          const response = await fetch(url, {
-            headers: {
-              Accept: "application/json",
-              "X-Subscription-Token": key,
-            },
-          });
-          if (!response.ok) {
-            return { error: `Brave search failed (HTTP ${response.status}).` };
+          // Bound the request: a hanging Brave response would otherwise stall
+          // the whole chat turn (no reply, stall-watchdog cancels it). Fail
+          // fast so the model can tell the user instead.
+          try {
+            const response = await fetch(url, {
+              headers: {
+                Accept: "application/json",
+                "X-Subscription-Token": key,
+              },
+              signal: AbortSignal.timeout(10_000),
+            });
+            if (!response.ok) {
+              return { error: `Brave search failed (HTTP ${response.status}).` };
+            }
+
+            const data = (await response.json()) as BraveResponse;
+            const results = (data.web?.results ?? [])
+              .slice(0, count)
+              .map((r) => ({
+                title: r.title,
+                url: r.url,
+                snippet: r.description ? stripTags(r.description) : "",
+              }));
+
+            return results.length > 0
+              ? { results }
+              : { results: [], note: "No results found." };
+          } catch (err) {
+            const aborted = err instanceof Error && err.name === "TimeoutError";
+            return {
+              error: aborted
+                ? "Web search timed out."
+                : `Web search failed: ${String(err instanceof Error ? err.message : err)}`,
+            };
           }
-
-          const data = (await response.json()) as BraveResponse;
-          const results = (data.web?.results ?? []).slice(0, count).map((r) => ({
-            title: r.title,
-            url: r.url,
-            snippet: r.description ? stripTags(r.description) : "",
-          }));
-
-          return results.length > 0
-            ? { results }
-            : { results: [], note: "No results found." };
         },
       }),
     };
