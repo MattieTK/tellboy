@@ -143,6 +143,13 @@ export class RichTelegramAdapter extends TelegramAdapter {
     });
     const parsed = this.internals.parseTelegramMessage(raw, resultingThreadId);
     this.internals.cacheMessage(parsed);
+    // Positive confirmation in observability that a Rich Message went out (the
+    // adapter only logs on failure otherwise, so success was previously
+    // invisible). Cheap; remove once the feature is well-proven.
+    console.log(
+      "tellboy: rich message sent",
+      JSON.stringify({ chars: markdown.length, hasTable: markdown.includes("|"), hasHeading: /^#{1,6}\s/m.test(markdown) }),
+    );
     return { id: parsed.id, threadId: parsed.threadId, raw } as RawMessage;
   }
 
