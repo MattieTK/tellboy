@@ -25,7 +25,8 @@ import type { TellboyAgent } from "../agent";
 // automated ones: the sandbox typecheck+tests at PR-creation time, and CI which
 // re-runs typecheck+tests before a merged change deploys. merge/close are scoped
 // to the bot's own `bot/*` branches so it can never touch a human's PR, and
-// `propose_change` refuses to edit the deploy machinery (.github/, deployer/).
+// `propose_change` refuses to edit the deploy machinery (.github/, deployer/),
+// the git internals (.git/), or any path that escapes the source tree.
 //
 // Enabled when GITHUB_TOKEN and GITHUB_REPO ("owner/name") are both set;
 // force on/off with ENABLE_SELFDEV.
@@ -41,6 +42,24 @@ export interface VerifiedChangePayload {
 // Method on TellboyAgent that the scheduler invokes to run the verification +
 // PR. Kept as a constant so the tool and the method can't drift apart.
 export const VERIFY_CALLBACK = "runVerifiedChange";
+
+// Paths a self-proposed change may never write. Beyond the deploy/CI machinery
+// (.github/, deployer/), block the git internals (.git/) — a hook planted there
+// would execute at `git push` time inside the clone, where the token-bearing
+// remote lives, sidestepping the typecheck/test gate — and reject absolute paths
+// or any ".." segment so a change can't escape the repo working tree. Pure and
+// exported so it is unit-tested (tests/plugins.test.ts).
+const PROTECTED_PREFIXES = [".github/", "deployer/", ".git/"];
+
+export function unsafeProposedPaths(paths: readonly string[]): string[] {
+  return paths.filter(
+    (p) =>
+      p === ".git" ||
+      p.startsWith("/") ||
+      p.split(/[\\/]/).includes("..") ||
+      PROTECTED_PREFIXES.some((prefix) => p.startsWith(prefix)),
+  );
+}
 
 export const selfdevPlugin: Plugin = {
   name: "selfdev",
@@ -122,16 +141,13 @@ export const selfdevPlugin: Plugin = {
             .describe("Files to create or overwrite."),
         }),
         execute: async ({ title, body, files }) => {
-          // The bot must not be able to weaken its own deploy machinery via a
-          // PR. These paths hold the CI workflow and the deploy proxy; changes
-          // to them go through humans only, not the self-edit flow.
-          const PROTECTED = [".github/", "deployer/"];
-          const blocked = files
-            .map((f) => f.path)
-            .filter((p) => PROTECTED.some((prefix) => p.startsWith(prefix)));
+          // Reject protected or tree-escaping paths before anything is
+          // scheduled: the bot must not weaken its own deploy machinery, plant a
+          // git hook, or write outside the source tree. See unsafeProposedPaths.
+          const blocked = unsafeProposedPaths(files.map((f) => f.path));
           if (blocked.length > 0) {
             return {
-              error: `These paths are protected and cannot be changed by the bot: ${blocked.join(", ")}`,
+              error: `These paths are not allowed (protected or outside the source tree): ${blocked.join(", ")}`,
             };
           }
 
