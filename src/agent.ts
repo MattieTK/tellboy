@@ -132,6 +132,11 @@ export class TellboyAgent extends Think<Env> {
   // context being available inside the tool-call hook.
   private lastChatId?: string;
 
+  // Status messages already sent this turn, so repeated tool calls (e.g. three
+  // web searches in one turn) don't spam the user with duplicate "🔎 Searching…".
+  // Reset at the start of each turn in beforeTurn.
+  private announcedStatuses = new Set<string>();
+
   getModel(): LanguageModel {
     const workersai = createWorkersAI({
       binding: this.env.AI,
@@ -176,6 +181,8 @@ export class TellboyAgent extends Think<Env> {
   // The trade-off is a small prefix-cache cost — acceptable for a personal
   // assistant, and the live conversation below the system prompt still caches.
   beforeTurn(ctx: TurnContext): TurnConfig {
+    // New turn: clear the per-turn status dedupe.
+    this.announcedStatuses = new Set();
     // Best-effort capture of the Telegram chat id for proactive sends
     // (reminders, selfdev results read it from storage when they fire from an
     // alarm with no messenger context). This MUST NOT block or fail the turn:
@@ -203,13 +210,11 @@ export class TellboyAgent extends Think<Env> {
   // Fire-and-forget — never block the tool; sendTelegram already swallows errors.
   beforeToolCall(ctx: ToolCallContext): void {
     const status = TOOL_STATUS[ctx.toolName];
+    if (!status || this.announcedStatuses.has(status)) return;
     const chatId =
       this.lastChatId ?? this.getMessengerContext()?.thread.providerThreadId;
-    console.log(
-      "tellboy: beforeToolCall",
-      JSON.stringify({ tool: ctx.toolName, hasStatus: !!status, hasChatId: !!chatId }),
-    );
-    if (!status || !chatId) return;
+    if (!chatId) return;
+    this.announcedStatuses.add(status);
     const { chatId: chat, messageThreadId: thread } = parseTelegramThread(chatId);
     void this.sendTelegram(chat, thread, status);
   }
