@@ -33,12 +33,15 @@ describe("plugin enablement", () => {
   it("enables every plugin when fully configured", () => {
     const names = enabledPluginNames(FULL_ENV).sort();
     expect(names).toEqual(
-      ["deploy", "logs", "reminders", "selfdev", "websearch"].sort(),
+      ["deploy", "logs", "persona", "reminders", "selfdev", "websearch"].sort(),
     );
   });
 
-  it("keeps reminders on with no config (no external dependency)", () => {
-    expect(enabledPluginNames({} as unknown as Env)).toEqual(["reminders"]);
+  it("keeps the dependency-free plugins on with no config", () => {
+    // reminders and persona have no external dependency, so both default on.
+    expect(enabledPluginNames({} as unknown as Env).sort()).toEqual(
+      ["persona", "reminders"].sort(),
+    );
   });
 
   it("auto-enables websearch only with a Brave key", () => {
@@ -127,6 +130,7 @@ describe("collectTools", () => {
         "close_pull_request",
         "request_deploy",
         "read_logs",
+        "set_persona",
       ].sort(),
     );
   });

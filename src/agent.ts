@@ -12,6 +12,7 @@ import { generateText, type LanguageModel, type ToolSet } from "ai";
 import { getSandbox } from "@cloudflare/sandbox";
 import { collectTools } from "./plugins";
 import { envFlag } from "./plugins/types";
+import { PERSONA_KEY, composePersona } from "./plugins/persona";
 import type { ReminderPayload } from "./plugins/reminders";
 import type { VerifiedChangePayload } from "./plugins/selfdev";
 import { getDefaultBranch, openPullRequest, type GitHubConfig } from "./github";
@@ -131,6 +132,12 @@ export class TellboyAgent extends Think<Env> {
   // Messages deferred while a reply was streaming; flushed in onChatResponse.
   private outboundQueue: Array<{ text: string; chatId?: string }> = [];
 
+  // In-memory cache of the user's chosen persona/tone, loaded once in onStart
+  // (which can await) so getSystemPrompt() — a synchronous getter Think calls
+  // per turn — can read it without blocking on storage. `undefined` means "not
+  // set", which composePersona() turns into the conservative default voice.
+  private persona: string | undefined;
+
   getModel(): LanguageModel {
     const workersai = createWorkersAI({
       binding: this.env.AI,
@@ -148,11 +155,50 @@ export class TellboyAgent extends Think<Env> {
     });
   }
 
+  // Load the durable persona/tone into the in-memory cache once at boot, so the
+  // synchronous getSystemPrompt() can honour it without a per-turn storage read.
+  // onStart can await (it runs inside partyserver's blockConcurrencyWhile), but
+  // a throw here is terminal (it retry-loops the DO init), so the read is
+  // best-effort: on any failure we keep `undefined` and fall back to the
+  // conservative default voice. Call super in case the base does init work.
+  async onStart(props?: Record<string, unknown>): Promise<void> {
+    await super.onStart?.(props);
+    try {
+      this.persona = await this.ctx.storage.get<string>(PERSONA_KEY);
+    } catch (e) {
+      console.error("tellboy: persona load failed (using default)", String(e));
+    }
+  }
+
+  // Read the cached persona/tone. Synchronous so tools and the prompt getter
+  // can use it without awaiting.
+  getPersona(): string | undefined {
+    return this.persona;
+  }
+
+  // Durably set (or, with `undefined`, clear) the user's persona/tone. Writes
+  // to per-thread DO storage and updates the in-memory cache so the next turn's
+  // getSystemPrompt() reflects it immediately. Called from the `set_persona`
+  // tool, which runs inside a chat turn (not an alarm), so awaiting the write
+  // here is fine — unlike beforeTurn, this is not on the no-output path.
+  async setPersona(persona: string | undefined): Promise<void> {
+    this.persona = persona;
+    if (persona === undefined) {
+      await this.ctx.storage.delete(PERSONA_KEY);
+    } else {
+      await this.ctx.storage.put(PERSONA_KEY, persona);
+    }
+  }
+
   getSystemPrompt(): string {
-    // Fallback persona. Once the `memory` context block (below) accumulates
-    // facts, those are layered on top of this prompt.
+    // Base instructions. Once the `memory` context block (below) accumulates
+    // facts, those are layered on top of this prompt. The persona/tone segment
+    // is composed from the user's cached choice (or a conservative default when
+    // unset) — it rides in the system prompt, not the 2k-token memory block, so
+    // it never crowds the memory budget.
     return [
       "You are Tellboy, a personal assistant that talks to one person over Telegram.",
+      composePersona(this.persona),
       "Be concise and direct. Prefer short answers; expand only when asked.",
       "Always present replies as well-structured Telegram Rich Messages — Markdown renders natively, so use the full GitHub-Flavored Markdown vocabulary by default instead of plain prose. Structure every non-trivial answer with the richest fitting layout: ## headings to separate sections, GFM | tables | for any comparison, set of options, or attribute/value data, bullet or numbered lists (nested for sub-points) for steps and collections, > blockquotes to set off quoted or key text, `inline code` and ```fenced blocks``` for code, paths and commands, ||spoilers|| for surprises, and --- dividers between major sections. Default to a heading/table/list structure whenever the content has any structure to it, and prefer that over a wall of text. Only a genuinely trivial reply — a yes/no or a single value — should be left plain.",
       "When the user shares a durable fact about themselves (preferences, names, ongoing projects, recurring tasks), remember it in your memory so future replies stay consistent.",
