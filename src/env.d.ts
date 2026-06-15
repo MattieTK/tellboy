@@ -65,4 +65,11 @@ interface Env {
    * so this only chooses which format is attempted first.
    */
   ENABLE_RICH_MESSAGES?: string;
+
+  /**
+   * Kill switch for inbound voice-note transcription. Transcription runs on the
+   * existing AI binding (no new credential) and is ON by default; set this to a
+   * falsy value ("false"/"0"/"off") to leave voice/audio notes untranscribed.
+   */
+  ENABLE_VOICE?: string;
 }
