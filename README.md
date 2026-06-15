@@ -116,6 +116,16 @@ Enables the `web_search` tool (Brave Search API).
   echo "<key>" | pnpm exec wrangler secret put BRAVE_API_KEY
   ```
 
+### Voice notes — on by default, no token
+
+Inbound Telegram voice notes (and audio clips) are transcribed with a Workers
+AI Whisper model on the existing `AI` binding, so there is nothing to configure.
+The transcript becomes the turn's text and is echoed back to the chat so you can
+spot and correct any mis-hearing. If transcription fails (e.g. the download
+times out), the turn degrades to a plain "couldn't transcribe" message rather
+than stalling. Set `ENABLE_VOICE` to a falsy value (`false`/`0`/`off`) to leave
+voice notes untranscribed.
+
 ### Read its own source and open PRs — `GITHUB_TOKEN` (+ `GITHUB_REPO`)
 
 The `selfdev` plugin lets the bot read its own code (`read_source`,

@@ -30,6 +30,14 @@ function richMessagesEnabled(env: Env): boolean {
   return envFlag(env, "rich_messages") ?? true;
 }
 
+// Whether to transcribe inbound voice/audio notes. The AI binding is always
+// present, so this is on by default; set ENABLE_VOICE to a falsy value to turn
+// it off (voice notes then pass through untranscribed). No new credential — it
+// runs on the existing env.AI binding.
+function voiceEnabled(env: Env): boolean {
+  return envFlag(env, "voice") ?? true;
+}
+
 // Cap noisy command output before it goes into a chat message.
 function truncate(text: string, max = 1500): string {
   const t = text.trim();
@@ -711,6 +719,21 @@ export class TellboyAgent extends Think<Env> {
       // automatically, and the `rich` flag is a kill switch (ENABLE_RICH_MESSAGES).
       telegram: richTelegramMessenger({
         rich: richMessagesEnabled(this.env),
+        // Transcribe inbound voice/audio notes with Workers AI Whisper on the
+        // existing env.AI binding (no new credential). The runner is passed in
+        // here because env.AI is reachable from the agent but not the adapter.
+        // The transcript becomes the turn's text and is echoed back so the user
+        // can correct mis-hearings; on failure the note degrades to a plain
+        // "couldn't transcribe" turn rather than blocking the bot.
+        voice: voiceEnabled(this.env)
+          ? {
+              run: (model, input) =>
+                this.env.AI.run(
+                  model as Parameters<Env["AI"]["run"]>[0],
+                  input as never,
+                ),
+            }
+          : undefined,
         token: this.env.TELEGRAM_BOT_TOKEN,
         userName: this.env.TELEGRAM_BOT_USERNAME,
         // Verified back via the X-Telegram-Bot-Api-Secret-Token header on every
