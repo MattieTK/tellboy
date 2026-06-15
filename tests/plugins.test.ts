@@ -33,14 +33,23 @@ describe("plugin enablement", () => {
   it("enables every plugin when fully configured", () => {
     const names = enabledPluginNames(FULL_ENV).sort();
     expect(names).toEqual(
-      ["deploy", "logs", "persona", "reminders", "selfdev", "websearch"].sort(),
+      [
+        "automations",
+        "deploy",
+        "logs",
+        "persona",
+        "reminders",
+        "selfdev",
+        "websearch",
+      ].sort(),
     );
   });
 
   it("keeps the dependency-free plugins on with no config", () => {
-    // reminders and persona have no external dependency, so both default on.
+    // automations, reminders and persona have no external dependency, so all
+    // three default on.
     expect(enabledPluginNames({} as unknown as Env).sort()).toEqual(
-      ["persona", "reminders"].sort(),
+      ["automations", "persona", "reminders"].sort(),
     );
   });
 
@@ -122,6 +131,9 @@ describe("collectTools", () => {
         "set_reminder",
         "list_reminders",
         "cancel_reminder",
+        "create_automation",
+        "list_automations",
+        "cancel_automation",
         "read_source",
         "list_source",
         "propose_change",

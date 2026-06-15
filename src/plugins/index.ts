@@ -2,6 +2,7 @@ import type { ToolSet } from "ai";
 import type { TellboyAgent } from "../agent";
 import type { Plugin } from "./types";
 import { remindersPlugin } from "./reminders";
+import { automationsPlugin } from "./automations";
 import { websearchPlugin } from "./websearch";
 import { selfdevPlugin } from "./selfdev";
 import { deployPlugin } from "./deploy";
@@ -12,6 +13,7 @@ import { personaPlugin } from "./persona";
 // wins via the spread below), so keep tool names unique across plugins.
 const REGISTRY: readonly Plugin[] = [
   remindersPlugin,
+  automationsPlugin,
   websearchPlugin,
   selfdevPlugin,
   deployPlugin,
