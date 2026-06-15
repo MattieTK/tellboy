@@ -8,12 +8,13 @@ import {
 import { defineMessengers, ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 import { createCompactFunction } from "agents/experimental/memory/utils";
 import { createWorkersAI } from "workers-ai-provider";
-import { generateText, type LanguageModel, type ToolSet } from "ai";
+import { generateText, stepCountIs, type LanguageModel, type ToolSet } from "ai";
 import { getSandbox } from "@cloudflare/sandbox";
 import { collectTools } from "./plugins";
 import { envFlag } from "./plugins/types";
 import { PERSONA_KEY, composePersona } from "./plugins/persona";
 import type { ReminderPayload } from "./plugins/reminders";
+import type { AutomationPayload } from "./plugins/automations";
 import type { VerifiedChangePayload } from "./plugins/selfdev";
 import { getDefaultBranch, openPullRequest, type GitHubConfig } from "./github";
 import { formatForTelegram, type TelegramParseMode } from "./format";
@@ -344,6 +345,57 @@ export class TellboyAgent extends Think<Env> {
       await this.enqueueOrSend(`⏰ Reminder: ${payload.message}`, payload.chatId);
     } catch (err) {
       console.error("tellboy: deliverReminder failed (swallowed)", String(err));
+    }
+  }
+
+  // Called by the durable scheduler when an automation set via the automations
+  // plugin comes due (see plugins/automations.ts, AUTOMATION_CALLBACK). Public
+  // because this.schedule() resolves the callback by method name.
+  //
+  // Where deliverReminder echoes a fixed message, an automation carries an
+  // instruction the bot runs as a model turn — with its full toolset — then
+  // delivers the result proactively through the same enqueueOrSend path as
+  // reminders/selfdev. We run the turn with generateText() (the same provider
+  // as getModel(), reusing the plugin toolset) rather than saveMessages(),
+  // because a turn started via saveMessages() from an alarm is not delivered to
+  // the messenger (AGENTS.md), whereas enqueueOrSend → notifyUser sends straight
+  // to the captured chat id.
+  async deliverAutomation(payload: AutomationPayload): Promise<void> {
+    // Swallow errors: a throw here makes the scheduler retry the alarm on a
+    // tight loop, which jams the DO (see AGENTS.md). Better to drop an
+    // automation than to wedge the bot.
+    try {
+      console.log(
+        "tellboy: deliverAutomation fired",
+        JSON.stringify({ hasChatId: payload.chatId !== undefined }),
+      );
+      const { text } = await generateText({
+        model: this.getModel(),
+        tools: this.getTools(),
+        // Let the model use its tools to complete the instruction, looping
+        // through tool calls up to a bounded number of steps.
+        stopWhen: stepCountIs(8),
+        system: [
+          this.getSystemPrompt(),
+          `Current time (UTC): ${new Date().toISOString()}.`,
+          "You are running a scheduled automation the user set up earlier. " +
+            "Carry out the instruction below and reply with only the result " +
+            "the user should see — no preamble about it being automated.",
+        ].join("\n\n"),
+        prompt: payload.instruction,
+      });
+      const result = text.trim();
+      // An empty model turn (e.g. tool-only with no closing text) shouldn't
+      // produce a blank message; fall back to acknowledging the run.
+      const message = result
+        ? `🤖 Automation: ${result}`
+        : `🤖 Automation ran: ${payload.instruction}`;
+      await this.enqueueOrSend(message, payload.chatId);
+    } catch (err) {
+      console.error(
+        "tellboy: deliverAutomation failed (swallowed)",
+        String(err),
+      );
     }
   }
 
