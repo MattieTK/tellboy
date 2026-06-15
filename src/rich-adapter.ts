@@ -44,6 +44,7 @@ import { RICH_MESSAGE_CHAR_LIMIT, toInputRichMessage } from "./rich";
 import {
   VOICE_DOWNLOAD_TIMEOUT_MS,
   buildTranscriptEcho,
+  removeAudioAttachments,
   selectVoiceAttachment,
   shouldTranscribe,
   transcribeVoiceMessage,
@@ -203,6 +204,11 @@ export class RichTelegramAdapter extends TelegramAdapter {
           run: this.voiceRunner!,
         })
       : null;
+
+    // Consume the audio: the transcript is now the turn's text, so drop the raw
+    // audio attachment. Left on the message, the model also receives it and
+    // replies that it "can't process audio files" on top of the transcript.
+    message.attachments = removeAudioAttachments(message.attachments);
 
     if (transcript === null) {
       message.text =

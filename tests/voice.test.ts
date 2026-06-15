@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   audioToBase64,
   buildTranscriptEcho,
+  removeAudioAttachments,
   selectVoiceAttachment,
   shouldTranscribe,
   transcribeVoiceMessage,
@@ -28,6 +29,21 @@ describe("selectVoiceAttachment", () => {
   it("returns null for empty or missing attachments", () => {
     expect(selectVoiceAttachment([])).toBeNull();
     expect(selectVoiceAttachment(undefined)).toBeNull();
+  });
+});
+
+describe("removeAudioAttachments", () => {
+  it("drops audio attachments so the model never sees the raw audio", () => {
+    expect(removeAudioAttachments([image, voice])).toEqual([image]);
+  });
+
+  it("returns an empty array when everything was audio", () => {
+    expect(removeAudioAttachments([voice])).toEqual([]);
+  });
+
+  it("handles empty or missing attachments", () => {
+    expect(removeAudioAttachments([])).toEqual([]);
+    expect(removeAudioAttachments(undefined)).toEqual([]);
   });
 });
 

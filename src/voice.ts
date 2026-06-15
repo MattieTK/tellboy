@@ -72,6 +72,20 @@ export function selectVoiceAttachment<T extends VoiceAttachment>(
 }
 
 /**
+ * Drop the audio attachments once they have been transcribed into text. This is
+ * essential, not cosmetic: if the raw audio attachment is left on the message,
+ * the model ALSO receives it and replies that it "can't process audio files" on
+ * top of the transcribed answer. Returns a new array with any non-audio
+ * attachments preserved.
+ */
+export function removeAudioAttachments<T extends VoiceAttachment>(
+  attachments: readonly T[] | undefined,
+): T[] {
+  if (!attachments) return [];
+  return attachments.filter((a) => !TRANSCRIBABLE_TYPES.has(a.type));
+}
+
+/**
  * Whether a message should be routed through transcription: it has a
  * transcribable audio attachment AND no usable text of its own. A voice note
  * with a caption (text) is left as-is — the user already typed what they meant.
