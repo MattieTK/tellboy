@@ -3,6 +3,7 @@ import type { TellboyAgent } from "../agent";
 import type { Plugin } from "./types";
 import { remindersPlugin } from "./reminders";
 import { automationsPlugin } from "./automations";
+import { briefingsPlugin } from "./briefings";
 import { websearchPlugin } from "./websearch";
 import { selfdevPlugin } from "./selfdev";
 import { deployPlugin } from "./deploy";
@@ -14,6 +15,7 @@ import { personaPlugin } from "./persona";
 const REGISTRY: readonly Plugin[] = [
   remindersPlugin,
   automationsPlugin,
+  briefingsPlugin,
   websearchPlugin,
   selfdevPlugin,
   deployPlugin,
