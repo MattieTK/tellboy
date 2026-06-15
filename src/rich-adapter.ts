@@ -55,6 +55,12 @@ import {
 // Default cadence for draft updates, mirroring the base adapter's default.
 const DRAFT_UPDATE_INTERVAL_MS = 250;
 
+// How often to re-issue the Telegram "typing" chat action (and refresh the
+// status draft) while a reply is in flight. Telegram clears a chat action after
+// ~5s, so we refresh just under that to keep the indicator alive through gaps
+// where no model text is flowing (time-to-first-token, tool calls, retries).
+const TYPING_KEEPALIVE_MS = 4_500;
+
 // The base adapter's instance members we rely on but that aren't in its public
 // types. Accessed via `this.internals` so the coupling is explicit and typed.
 interface TelegramAdapterInternals {
@@ -120,11 +126,19 @@ export interface RichTelegramAdapterConfig extends TelegramAdapterConfig {
    * notes pass through untouched (the previous behaviour).
    */
   voice?: { run: TranscribeRunner };
+  /**
+   * Optional provider for a transient "what I'm doing now" status (e.g. the
+   * running tool's label), shown as a rich draft during a streamed reply while
+   * no model text is flowing yet. Returning `null`/empty shows just the typing
+   * keep-alive. Wired from agent.ts, which tracks the active tool.
+   */
+  status?: () => string | null;
 }
 
 export class RichTelegramAdapter extends TelegramAdapter {
   private readonly richEnabled: boolean;
   private readonly voiceRunner?: TranscribeRunner;
+  private readonly statusProvider?: () => string | null;
   // Per-stream draft id; non-zero and reused within one stream so Telegram
   // animates successive updates (see sendRichMessageDraft.draft_id).
   private draftSeq = 0;
@@ -133,6 +147,7 @@ export class RichTelegramAdapter extends TelegramAdapter {
     super(config);
     this.richEnabled = config.rich ?? false;
     this.voiceRunner = config.voice?.run;
+    this.statusProvider = config.status;
   }
 
   private get internals(): TelegramAdapterInternals {
@@ -359,6 +374,7 @@ export class RichTelegramAdapter extends TelegramAdapter {
     let lastSent: string | null = null;
     let lastFlushAt = 0;
     let draftsEnabled = true;
+    let lastStatusSent: string | null = null;
 
     const flushDraft = async (): Promise<void> => {
       if (
@@ -390,20 +406,78 @@ export class RichTelegramAdapter extends TelegramAdapter {
       }
     };
 
-    for await (const chunk of textStream) {
-      const text = textOfChunk(chunk);
-      if (text === null) continue;
-      accumulated += text;
-      if (Date.now() - lastFlushAt >= intervalMs) {
-        await flushDraft();
+    // Re-issue the Telegram typing action so the indicator never expires during
+    // gaps where no model text is flowing (TTFT, tool calls, capacity retries).
+    // Best-effort and time-bounded so it can never wedge or block the reply.
+    const sendTyping = async (): Promise<void> => {
+      try {
+        await this.internals.telegramFetch(
+          "sendChatAction",
+          { chat_id: chatId, message_thread_id: messageThreadId, action: "typing" },
+          { signal: AbortSignal.timeout(4_000) },
+        );
+      } catch {
+        // Indicator is cosmetic; ignore failures.
       }
-    }
-    await flushDraft();
+    };
 
-    // Finalise through the overridden postMessage: a non-empty body becomes a
-    // persisted Rich Message; an empty body falls to super.postMessage, which
-    // throws the base adapter's "text cannot be empty" error as before.
-    return this.postMessage(threadId, { markdown: accumulated } as PostableMessage);
+    // While no model text has arrived yet, surface the active tool as a
+    // transient draft (e.g. "🔍 Searching the web…"). Once real text flows,
+    // accumulated is non-empty so this no-ops and the text draft takes over;
+    // both share draftId, so the final message replaces whatever is showing.
+    const pushStatusDraft = async (): Promise<void> => {
+      if (!draftsEnabled || accumulated.trim()) return;
+      const status = this.statusProvider?.() ?? null;
+      if (!status || status === lastStatusSent || status.length > RICH_MESSAGE_CHAR_LIMIT) return;
+      try {
+        await this.internals.telegramFetch(
+          "sendRichMessageDraft",
+          {
+            chat_id: Number(chatId),
+            message_thread_id: messageThreadId,
+            draft_id: draftId,
+            rich_message: toInputRichMessage(status),
+          },
+          { signal: AbortSignal.timeout(4_000) },
+        );
+        lastStatusSent = status;
+      } catch {
+        // Status preview is best-effort; the final send is unaffected.
+      }
+    };
+
+    // Self-rescheduling keep-alive: fires immediately (so typing shows at once)
+    // then every TYPING_KEEPALIVE_MS until the stream ends and `finally` stops
+    // it. setTimeout (not setInterval) so a slow tick can't overlap itself.
+    let stopped = false;
+    let keepAlive: ReturnType<typeof setTimeout> | undefined;
+    const tick = async (): Promise<void> => {
+      if (stopped) return;
+      await sendTyping();
+      await pushStatusDraft();
+      if (!stopped) keepAlive = setTimeout(tick, TYPING_KEEPALIVE_MS);
+    };
+    keepAlive = setTimeout(tick, 0);
+
+    try {
+      for await (const chunk of textStream) {
+        const text = textOfChunk(chunk);
+        if (text === null) continue;
+        accumulated += text;
+        if (Date.now() - lastFlushAt >= intervalMs) {
+          await flushDraft();
+        }
+      }
+      await flushDraft();
+
+      // Finalise through the overridden postMessage: a non-empty body becomes a
+      // persisted Rich Message; an empty body falls to super.postMessage, which
+      // throws the base adapter's "text cannot be empty" error as before.
+      return await this.postMessage(threadId, { markdown: accumulated } as PostableMessage);
+    } finally {
+      stopped = true;
+      if (keepAlive !== undefined) clearTimeout(keepAlive);
+    }
   }
 
   private allocateDraftId(): number {
@@ -455,6 +529,11 @@ export interface RichTelegramMessengerOptions extends TelegramMessengerOptions {
    * from agent.ts where `env.AI` is reachable. Omit to leave voice notes as-is.
    */
   voice?: { run: TranscribeRunner };
+  /**
+   * Provider for a transient "what I'm doing now" status shown as a draft
+   * during a streamed reply (see {@link RichTelegramAdapterConfig.status}).
+   */
+  status?: () => string | null;
 }
 
 /**
@@ -466,7 +545,7 @@ export interface RichTelegramMessengerOptions extends TelegramMessengerOptions {
 export function richTelegramMessenger(
   options: RichTelegramMessengerOptions,
 ): ReturnType<typeof telegramMessenger> {
-  const { rich, voice, ...rest } = options;
+  const { rich, voice, status, ...rest } = options;
   const adapterName = options.adapterName ?? "telegram";
   const shardThread =
     options.shardKey ??
@@ -491,6 +570,7 @@ export function richTelegramMessenger(
     userName: options.userName,
     rich: rich ?? false,
     voice,
+    status,
   });
 
   return chatSdkMessenger({

@@ -1,14 +1,25 @@
 import {
   Think,
   Session,
+  defaultContextOverflowClassifier,
   type TurnContext,
   type TurnConfig,
   type ChatResponseResult,
+  type ChatErrorClassification,
+  type ToolCallContext,
+  type ToolCallResultContext,
 } from "@cloudflare/think";
 import { defineMessengers, ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
-import { createCompactFunction } from "agents/experimental/memory/utils";
+import { createCompactFunction, estimateMessageTokens } from "agents/experimental/memory/utils";
 import { createWorkersAI } from "workers-ai-provider";
-import { generateText, stepCountIs, type LanguageModel, type ToolSet } from "ai";
+import {
+  generateText,
+  stepCountIs,
+  wrapLanguageModel,
+  type LanguageModel,
+  type LanguageModelMiddleware,
+  type ToolSet,
+} from "ai";
 import { getSandbox } from "@cloudflare/sandbox";
 import { collectTools } from "./plugins";
 import { envFlag } from "./plugins/types";
@@ -100,9 +111,38 @@ function parseTelegramThread(providerThreadId: string): {
 // These are the load-bearing trade-off of the whole feature, so they are set
 // in one place. Tune them to taste; see the contribution request below for the
 // summarise() implementation that turns the compacted middle into the summary.
-const COMPACT_AFTER_TOKENS = 12_000;
+//   The Kimi model has a 262,144-token context window, so we keep history
+//   verbatim far longer than the old 12k threshold (which forced lossy,
+//   tool-heavy summarisation on every short conversation and — because the
+//   default char heuristic under-counts tool JSON — kept returning null, so
+//   history was never actually shortened). 150k stays well under the window
+//   while leaving ~110k of headroom for a single between-turns turn to grow
+//   (compaction is only checked between turns). The wide TAIL_TOKEN_BUDGET
+//   guarantees a non-empty middle to summarise so compaction can't no-op.
+const COMPACT_AFTER_TOKENS = 150_000;
 const PROTECT_HEAD = 2;
-const TAIL_TOKEN_BUDGET = 4_000;
+const TAIL_TOKEN_BUDGET = 40_000;
+
+// Stall watchdog. Think leaves this at 0 (disabled) by default, which is why a
+// hung or over-capacity model call left the user on a dead typing indicator
+// with no error: the stream never produced a chunk and nothing aborted it.
+// With a value set, a turn that emits no UI-stream chunk (model token OR tool
+// activity) for this long is aborted and routed to chatRecovery instead of
+// parking forever. Set comfortably above the slowest model time-to-first-token
+// and the slowest in-turn tool (the sandbox build runs off-turn, so in-turn
+// tools are web_search/MCP/GitHub reads — all AbortSignal.timeout-bounded).
+const STALL_TIMEOUT_MS = 120_000;
+
+// Retry policy for transient Workers AI capacity errors (e.g.
+// "AiError: 3040: Capacity temporarily exceeded"). workers-ai-provider rethrows
+// the raw AiError unwrapped, so the AI SDK never classifies it as retryable and
+// the turn dies on the first refusal. We retry it ourselves via a
+// wrapLanguageModel middleware (below), which covers BOTH the streamed chat()
+// path and the generateText() paths (summaries, automations, briefings) that
+// reuse getModel(). Capacity errors are thrown before the stream yields its
+// first chunk, so retrying here can never double-send a partial reply. Backoff
+// is exponential with full jitter; worst case ~15s, well under STALL_TIMEOUT_MS.
+const CAPACITY_RETRY = { maxAttempts: 4, baseDelayMs: 1_000, maxDelayMs: 8_000 } as const;
 
 // Re-export so Think's messenger sub-agent routing can resolve the Chat SDK
 // state facet (agents/chat-sdk). Production apps do not need a separate DO
@@ -127,6 +167,93 @@ export const ROOT_INSTANCE = "tellboy";
 // Exported so the Worker entry can allow exactly this path through its auth guard.
 export const WEBHOOK_PATH = `/agents/tellboy-agent/${ROOT_INSTANCE}/messengers/telegram/webhook`;
 
+// Is this model error a transient capacity/rate-limit/upstream blip worth
+// retrying, as opposed to a deterministic failure (bad request, context
+// overflow) or a deliberate abort (stall watchdog, turn cancellation)? We match
+// on the message because workers-ai-provider rethrows the raw AiError without a
+// typed `isRetryable` flag; the numeric code / HTTP status are best-effort.
+function isTransientCapacityError(err: unknown): boolean {
+  const e = err as
+    | { name?: string; message?: string; code?: unknown; statusCode?: unknown; status?: unknown }
+    | undefined;
+  // Never retry an abort/cancel/timeout — that's the watchdog or the user.
+  if (/abort|cancel|timeout/i.test(String(e?.name ?? ""))) return false;
+  const msg = String(e?.message ?? err ?? "");
+  // Context overflow is deterministic; retrying the same prompt fails the same
+  // way. The reactive context-overflow backstop (which recompacts first)
+  // handles that case instead.
+  if (/prompt is too long|context (length|window)|maximum context|too many tokens/i.test(msg)) {
+    return false;
+  }
+  const status = Number(e?.statusCode ?? e?.status ?? NaN);
+  return (
+    e?.code === 3040 ||
+    [408, 429, 500, 502, 503, 504].includes(status) ||
+    /\b3040\b|capacity temporarily exceeded|temporarily (overloaded|unavailable)|overloaded|rate.?limit(?:ed)?|too many requests|try again later|service unavailable/i.test(
+      msg,
+    )
+  );
+}
+
+// LanguageModel middleware that retries transient capacity errors with
+// exponential backoff + full jitter. Wraps both doGenerate and doStream; the
+// retry happens before the stream resolves (capacity errors throw up-front), so
+// a partially-streamed reply is never re-sent.
+function capacityRetryMiddleware(policy: {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+}): LanguageModelMiddleware {
+  const run = async <T>(fn: () => PromiseLike<T>): Promise<T> => {
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= policy.maxAttempts; attempt++) {
+      try {
+        return await fn();
+      } catch (err) {
+        lastErr = err;
+        if (attempt >= policy.maxAttempts || !isTransientCapacityError(err)) throw err;
+        const ceiling = Math.min(policy.maxDelayMs, policy.baseDelayMs * 2 ** (attempt - 1));
+        const delay = ceiling / 2 + Math.random() * (ceiling / 2); // full jitter
+        console.warn(
+          `tellboy: transient model error, retrying (attempt ${attempt}/${policy.maxAttempts}, ~${Math.round(delay)}ms):`,
+          String((err as Error)?.message ?? err),
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+    throw lastErr;
+  };
+  return {
+    specificationVersion: "v3",
+    wrapGenerate: ({ doGenerate }) => run(doGenerate),
+    wrapStream: ({ doStream }) => run(doStream),
+  };
+}
+
+// Friendly "what I'm doing right now" label for a tool call, shown as a
+// transient Telegram draft during the turn (replaced by the streamed answer) so
+// the user sees progress through tool gaps instead of dead air. Unknown tools
+// get a generic label rather than nothing.
+function toolStatusLabel(toolName: string): string {
+  const labels: Record<string, string> = {
+    web_search: "🔍 Searching the web…",
+    read_source: "📖 Reading my source…",
+    list_source: "📂 Looking through my source…",
+    propose_change: "🛠️ Verifying and proposing a change…",
+    list_pull_requests: "🔁 Checking my pull requests…",
+    merge_pull_request: "🚀 Merging and deploying…",
+    close_pull_request: "🔁 Updating a pull request…",
+    set_reminder: "⏰ Setting that reminder…",
+    list_reminders: "⏰ Checking your reminders…",
+    set_automation: "🤖 Setting up that automation…",
+    list_automations: "🤖 Checking your automations…",
+    set_briefing: "🗞️ Setting up your briefing…",
+    set_context: "🧠 Noting that for next time…",
+    set_persona: "🎭 Updating my tone…",
+  };
+  return labels[toolName] ?? `⚙️ Working on \`${toolName}\`…`;
+}
+
 export class TellboyAgent extends Think<Env> {
   // Hide chain-of-thought from the Telegram chat. Kimi is reasoning-capable;
   // we let it reason internally (see reasoning_effort below) but do not stream
@@ -143,6 +270,21 @@ export class TellboyAgent extends Think<Env> {
   // src/plugins/mcp.ts and connectMcpServers() in onStart.
   waitForMcpConnections = { timeout: MCP_CONNECT_TIMEOUT_MS };
 
+  // Abort and recover a turn that goes silent (no model token or tool activity)
+  // for this long, instead of leaving the user on a dead typing indicator. Think
+  // defaults this to 0 (off); see STALL_TIMEOUT_MS. chatRecovery is on by
+  // default, so a tripped watchdog resumes the turn rather than dropping it.
+  chatStreamStallTimeoutMs = STALL_TIMEOUT_MS;
+
+  // Reactive backstop for the gap between compaction checks (compaction only
+  // runs between turns; a single long, tool-heavy turn can still grow past the
+  // window). On a context-overflow error, Think discards the partial, runs
+  // session.compact(), and re-runs the turn from the compacted history. Pairs
+  // with classifyChatError below. With the 150k threshold + working compaction
+  // this should rarely fire, but without it an overflow would die silently —
+  // exactly the failure class we're removing.
+  contextOverflow = { reactive: true };
+
   // True while a chat turn (and its streamed reply) is in progress. Out-of-band
   // messages (reminders, selfdev results) are queued during this window so they
   // don't interrupt or cut off the streaming reply — see enqueueOrSend.
@@ -157,21 +299,46 @@ export class TellboyAgent extends Think<Env> {
   // set", which composePersona() turns into the conservative default voice.
   private persona: string | undefined;
 
+  // The friendly label of the tool currently executing this turn (set in
+  // beforeToolCall, cleared in afterToolCall and at turn boundaries). The rich
+  // adapter reads it via the `status` provider passed in getMessengers() to show
+  // a transient "doing X…" draft during tool gaps. `null` means no active tool.
+  private toolStatus: string | null = null;
+
   getModel(): LanguageModel {
+    // sessionAffinity is a stable key so a conversation's turns hit the same
+    // backend replica and benefit from prefix caching. reasoning_effort "low"
+    // keeps latency/cost modest while preserving some reasoning (hidden because
+    // sendReasoning is false). buildModel adds the capacity-retry middleware.
+    return this.buildModel({ reasoningEffort: "low", sessionAffinity: this.sessionAffinity });
+  }
+
+  // Build the chat model with the shared capacity-retry middleware applied, so
+  // every model call — the streamed inbound reply and the generateText() paths
+  // (summaries, automations, briefings) — retries transient capacity errors the
+  // same way. Defined in one place so the retry policy can't drift between
+  // paths (the previous bug: summarize() built its own un-retried model).
+  private buildModel(opts: {
+    reasoningEffort: "low" | "medium" | "high" | null;
+    sessionAffinity?: string;
+  }): LanguageModel {
     const workersai = createWorkersAI({
       binding: this.env.AI,
       gateway: { id: this.env.AI_GATEWAY_ID },
     });
-    return workersai(this.env.MODEL_ID, {
-      // Stable key so a conversation's turns hit the same backend replica and
-      // benefit from prefix caching.
-      sessionAffinity: this.sessionAffinity,
-      // Keep latency/cost modest for a chat assistant while preserving some
-      // reasoning. Raise to "medium"/"high" for harder tasks, or set to null
-      // to disable reasoning entirely. Output is hidden either way because
-      // sendReasoning is false.
-      reasoning_effort: "low",
+    const base = workersai(this.env.MODEL_ID, {
+      sessionAffinity: opts.sessionAffinity,
+      reasoning_effort: opts.reasoningEffort,
     });
+    return wrapLanguageModel({ model: base, middleware: capacityRetryMiddleware(CAPACITY_RETRY) });
+  }
+
+  // Map a model error to a class Think can act on. We only assert
+  // "context_overflow" (via the framework's classifier), which arms the reactive
+  // backstop above; capacity/transient errors are already handled by the
+  // retry middleware, so we leave those unclassified (undefined) here.
+  classifyChatError(error: unknown): ChatErrorClassification | undefined {
+    return defaultContextOverflowClassifier(error);
   }
 
   // Load the durable persona/tone into the in-memory cache once at boot, so the
@@ -256,6 +423,8 @@ export class TellboyAgent extends Think<Env> {
     // Drop anything left from a turn that ended without onChatResponse (e.g.
     // aborted), so the queue can never get stuck and swallow future sends.
     this.outboundQueue = [];
+    // No tool is running yet this turn; clear any stale status from a prior turn.
+    this.toolStatus = null;
     // Best-effort capture of the Telegram chat id for proactive sends
     // (reminders, selfdev results read it from storage when they fire from an
     // alarm with no messenger context). This MUST NOT block or fail the turn:
@@ -280,9 +449,23 @@ export class TellboyAgent extends Think<Env> {
   // out-of-band messages go out now, after the reply — never during it.
   async onChatResponse(_result: ChatResponseResult): Promise<void> {
     this.turnActive = false;
+    this.toolStatus = null;
     const queued = this.outboundQueue;
     this.outboundQueue = [];
     for (const m of queued) await this.notifyUser(m.text, m.chatId);
+  }
+
+  // Surface the running tool as a transient status while it executes (the rich
+  // adapter shows it as a draft during the gap where no model text is flowing).
+  // Returns void so the tool runs normally.
+  beforeToolCall(ctx: ToolCallContext): void {
+    this.toolStatus = toolStatusLabel(ctx.toolName);
+  }
+
+  // Tool finished — clear the status so the keep-alive falls back to a plain
+  // typing indicator until the next tool or the model's text.
+  afterToolCall(_ctx: ToolCallResultContext): void {
+    this.toolStatus = null;
   }
 
   // Send a message, or queue it if a reply is currently streaming so it waits
@@ -322,6 +505,13 @@ export class TellboyAgent extends Think<Env> {
           summarize: (prompt) => this.summarize(prompt),
           protectHead: PROTECT_HEAD,
           tailTokenBudget: TAIL_TOKEN_BUDGET,
+          // Per-message counter for the tail-budget boundary walk. Without it
+          // the default char heuristic under-counts tool-heavy messages, the
+          // protected tail "covers" the whole history, the middle slice comes
+          // out empty, and createCompactFunction returns null — i.e. compaction
+          // silently no-ops (the production failure). Reusing the framework's
+          // own estimator keeps the boundary math consistent with the threshold.
+          tokenCounter: (msgs) => estimateMessageTokens(msgs),
         }),
       )
       .compactAfter(COMPACT_AFTER_TOKENS)
@@ -339,12 +529,10 @@ export class TellboyAgent extends Think<Env> {
     // for no quality gain. This is the same provider as getModel() with
     // reasoning_effort turned off, and no sessionAffinity since compaction is
     // not part of the live conversation's prefix cache.
-    const workersai = createWorkersAI({
-      binding: this.env.AI,
-      gateway: { id: this.env.AI_GATEWAY_ID },
-    });
     const { text } = await generateText({
-      model: workersai(this.env.MODEL_ID, { reasoning_effort: null }),
+      // Built through the shared helper so summarisation inherits the
+      // capacity-retry middleware too.
+      model: this.buildModel({ reasoningEffort: null }),
       prompt,
     });
     return text;
@@ -736,6 +924,9 @@ export class TellboyAgent extends Think<Env> {
       // automatically, and the `rich` flag is a kill switch (ENABLE_RICH_MESSAGES).
       telegram: richTelegramMessenger({
         rich: richMessagesEnabled(this.env),
+        // Lets the streamed-reply adapter surface the running tool as a
+        // transient "doing X…" draft during tool gaps (see beforeToolCall).
+        status: () => this.toolStatus,
         // Transcribe inbound voice/audio notes with Workers AI Whisper on the
         // existing env.AI binding (no new credential). The runner is passed in
         // here because env.AI is reachable from the agent but not the adapter.

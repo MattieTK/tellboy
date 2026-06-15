@@ -58,24 +58,53 @@ reminder is far better than wedging the bot.
 ### External fetches in tools must have a timeout
 
 A tool's `execute` runs inside the chat turn. A `fetch()` with no timeout that
-hangs (slow Brave/GitHub response) hangs the tool, which stalls the turn — the
-stall-watchdog cancels it ~30s later and the user gets **no reply** (it looks
-frozen). Always pass `signal: AbortSignal.timeout(ms)` on outbound fetches in
-tools/turns and return a clean error on failure, so the model can respond
-instead of hanging. See `web_search` (`src/plugins/websearch.ts`) and `ghFetch`
-(`src/github.ts`).
+hangs (slow Brave/GitHub response) hangs the tool, which stalls the turn. The
+stall watchdog (`chatStreamStallTimeoutMs`, set to `STALL_TIMEOUT_MS` = 120s in
+`agent.ts`) will eventually abort and recover it, but 120s is a long frozen-
+looking gap — a per-fetch timeout fails fast instead. Always pass
+`signal: AbortSignal.timeout(ms)` on outbound fetches in tools/turns and return a
+clean error on failure, so the model can respond instead of hanging. See
+`web_search` (`src/plugins/websearch.ts`) and `ghFetch` (`src/github.ts`).
 
 ### `beforeTurn` must not block on I/O
 
 `beforeTurn` runs before the model produces any output. If it `await`s
 something that hangs (e.g. a Durable Object `storage.put()` that stalls in the
-sub-agent context), the reply turn produces no stream chunks, Think's stall
-watchdog aborts it, and `chatRecovery` retries the same message every ~20s — so
-the bot goes **completely silent with no error**.
+sub-agent context), the reply turn produces no stream chunks. The stall watchdog
+(now enabled, 120s) aborts it and `chatRecovery` resumes — but until that fires
+the bot looks **silent with no error**, so still keep `beforeTurn` cheap.
 
 - **Rule:** keep `beforeTurn` synchronous and cheap. Do any persistence
   fire-and-forget (`void this.ctx.storage.put(...).catch(...)`) so it can never
   block or fail the turn.
+
+### Streaming liveness, capacity retries, and compaction are load-bearing
+
+These three were added together after an incident where one message produced a
+typing indicator, ~6.5 minutes of silence, then a capacity error (the prompt had
+grown to ~40k tokens, every call was slow, and nothing retried or kept the user
+informed). They interact — don't remove one in isolation:
+
+- **Compaction must not no-op.** `configureSession` passes a per-message
+  `tokenCounter` (`estimateMessageTokens`) to `createCompactFunction` and a wide
+  `TAIL_TOKEN_BUDGET`. Without the counter, the default char heuristic
+  under-counts tool-heavy history, the protected tail "covers" everything, the
+  middle slice is empty, and compaction returns **null** (history never
+  shortened). `COMPACT_AFTER_TOKENS` is 150k (well under Kimi's 262k window);
+  keep it under ~190k so a single between-turns turn can't overflow before the
+  next check. `contextOverflow.reactive` + `classifyChatError` are the backstop
+  if it does.
+- **Capacity errors must retry.** Workers AI throws `AiError 3040` unwrapped, so
+  the AI SDK won't retry it. `buildModel()` wraps the model with
+  `capacityRetryMiddleware` (match in `isTransientCapacityError`), covering both
+  the streamed chat path and every `generateText()` path. Build all models
+  through `buildModel()` so the retry can't be bypassed (the original bug:
+  `summarize()` built its own un-retried model).
+- **The user must never see dead air.** `RichTelegramAdapter.streamRich`
+  re-issues the Telegram typing action every `TYPING_KEEPALIVE_MS` (under
+  Telegram's ~5s clear) and shows the running tool as a transient draft
+  (`beforeToolCall` sets `toolStatus`; the messenger `status` provider reads it).
+  Both are best-effort and torn down in a `finally`.
 
 ### Proactive messages don't reach Telegram via `saveMessages()`
 
