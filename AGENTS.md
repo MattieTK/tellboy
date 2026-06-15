@@ -1,7 +1,18 @@
 # AGENTS.md
 
-Notes for agents (and humans) working on tellboy. See `README.md` for setup and
-`src/agent.ts` for the main wiring.
+Notes for agents (and humans) working on tellboy. See `README.md` for setup,
+`FEATURES.md` for what the bot can do, and `src/agent.ts` for the main wiring.
+
+## Keep `FEATURES.md` current
+
+`FEATURES.md` is the single user-facing description of what the bot can do, and
+it is easy to let it rot. **When you add, remove, or materially change a
+user-facing capability — a new plugin or tool, a new `ENABLE_*`/config flag, or
+changed behaviour — update `FEATURES.md` in the same change**: the relevant
+capability section *and* the config/flags reference table. This applies to
+self-authored changes too — a `propose_change` that adds a tool should carry the
+matching `FEATURES.md` edit. Purely internal changes (a refactor, or a bug fix
+with no user-visible effect) need no doc update.
 
 ## Self-modification is gated by tests, not humans
 
