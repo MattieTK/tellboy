@@ -35,6 +35,7 @@ describe("plugin enablement", () => {
     expect(names).toEqual(
       [
         "automations",
+        "briefings",
         "deploy",
         "logs",
         "persona",
@@ -46,10 +47,10 @@ describe("plugin enablement", () => {
   });
 
   it("keeps the dependency-free plugins on with no config", () => {
-    // automations, reminders and persona have no external dependency, so all
-    // three default on.
+    // automations, briefings, reminders and persona have no external
+    // dependency, so all four default on.
     expect(enabledPluginNames({} as unknown as Env).sort()).toEqual(
-      ["automations", "persona", "reminders"].sort(),
+      ["automations", "briefings", "persona", "reminders"].sort(),
     );
   });
 
@@ -134,6 +135,8 @@ describe("collectTools", () => {
         "create_automation",
         "list_automations",
         "cancel_automation",
+        "set_briefing",
+        "disable_briefing",
         "read_source",
         "list_source",
         "propose_change",

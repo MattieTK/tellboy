@@ -15,6 +15,7 @@ import { envFlag } from "./plugins/types";
 import { PERSONA_KEY, composePersona } from "./plugins/persona";
 import type { ReminderPayload } from "./plugins/reminders";
 import type { AutomationPayload } from "./plugins/automations";
+import type { BriefingPayload } from "./plugins/briefings";
 import type { VerifiedChangePayload } from "./plugins/selfdev";
 import { getDefaultBranch, openPullRequest, type GitHubConfig } from "./github";
 import { formatForTelegram, type TelegramParseMode } from "./format";
@@ -396,6 +397,57 @@ export class TellboyAgent extends Think<Env> {
         "tellboy: deliverAutomation failed (swallowed)",
         String(err),
       );
+    }
+  }
+
+  // Called by the durable scheduler each day when a briefing set via the
+  // briefings plugin comes due (see plugins/briefings.ts, BRIEFING_CALLBACK).
+  // Public because this.schedule() resolves the callback by method name.
+  //
+  // Like deliverAutomation, this runs a model turn with the full toolset and
+  // delivers the result proactively through enqueueOrSend → notifyUser (a turn
+  // started via saveMessages() from an alarm is not delivered to the messenger;
+  // AGENTS.md). The instruction is fixed: compile the day's brief. The model can
+  // reach its reminders/automations via list_reminders/list_automations and any
+  // watch topics via web_search, so it composes the brief from live state.
+  async deliverBriefing(payload: BriefingPayload): Promise<void> {
+    // Swallow errors: a throw here makes the scheduler retry the alarm on a
+    // tight loop, which jams the DO (see AGENTS.md). Better to drop a briefing
+    // than to wedge the bot.
+    try {
+      console.log(
+        "tellboy: deliverBriefing fired",
+        JSON.stringify({ hasChatId: payload.chatId !== undefined }),
+      );
+      const { text } = await generateText({
+        model: this.getModel(),
+        tools: this.getTools(),
+        // Let the model gather state (reminders, automations, watch topics)
+        // across a bounded number of tool-call steps before composing.
+        stopWhen: stepCountIs(8),
+        system: [
+          this.getSystemPrompt(),
+          `Current time (UTC): ${new Date().toISOString()}.`,
+          "You are compiling the user's daily briefing, which the bot sends " +
+            "unprompted. Compile and send the user's briefing: their " +
+            "reminders and automations due today plus any topics they have " +
+            "asked you to watch. Use your tools (e.g. list_reminders, " +
+            "list_automations, web_search) to gather the live state, then " +
+            "reply with only the brief the user should see — a short, " +
+            "well-structured Rich Message. If there is nothing noteworthy, " +
+            "say so briefly. No preamble about this being automated.",
+        ].join("\n\n"),
+        prompt:
+          "Compile and send my briefing for today: reminders and automations " +
+          "due today plus any watch topics.",
+      });
+      const result = text.trim();
+      const message = result
+        ? `🗞️ Daily briefing\n\n${result}`
+        : "🗞️ Daily briefing: nothing noteworthy today.";
+      await this.enqueueOrSend(message, payload.chatId);
+    } catch (err) {
+      console.error("tellboy: deliverBriefing failed (swallowed)", String(err));
     }
   }
 
