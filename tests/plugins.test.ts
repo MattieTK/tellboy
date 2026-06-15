@@ -76,6 +76,21 @@ describe("plugin enablement", () => {
     expect(withBinding).toEqual(expect.arrayContaining(["deploy", "logs"]));
   });
 
+  it("auto-enables mcp only with a non-empty, valid MCP_SERVERS array", () => {
+    expect(enabledPluginNames({} as unknown as Env)).not.toContain("mcp");
+    expect(
+      enabledPluginNames({ MCP_SERVERS: "[]" } as unknown as Env),
+    ).not.toContain("mcp");
+    expect(
+      enabledPluginNames({ MCP_SERVERS: "not json" } as unknown as Env),
+    ).not.toContain("mcp");
+    expect(
+      enabledPluginNames({
+        MCP_SERVERS: '[{"name":"x","url":"https://mcp.test"}]',
+      } as unknown as Env),
+    ).toContain("mcp");
+  });
+
   it("honours an explicit ENABLE_ override", () => {
     expect(
       enabledPluginNames({ ENABLE_REMINDERS: "false" } as unknown as Env),

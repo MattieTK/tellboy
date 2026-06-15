@@ -13,6 +13,7 @@ import { getSandbox } from "@cloudflare/sandbox";
 import { collectTools } from "./plugins";
 import { envFlag } from "./plugins/types";
 import { PERSONA_KEY, composePersona } from "./plugins/persona";
+import { connectMcpServers, MCP_CONNECT_TIMEOUT_MS } from "./plugins/mcp";
 import type { ReminderPayload } from "./plugins/reminders";
 import type { AutomationPayload } from "./plugins/automations";
 import type { BriefingPayload } from "./plugins/briefings";
@@ -134,6 +135,14 @@ export class TellboyAgent extends Think<Env> {
   // if you want the reasoning surfaced.
   sendReasoning = false;
 
+  // Wait (briefly) for connected MCP servers' tools to be ready before each
+  // turn's inference loop — Think auto-merges those tools into the toolset. The
+  // timeout is a hard cap so a slow or dead MCP server can never stall a turn:
+  // Think proceeds with whatever tools have connected by then. When no MCP
+  // server is configured this is harmless (nothing to wait for). See
+  // src/plugins/mcp.ts and connectMcpServers() in onStart.
+  waitForMcpConnections = { timeout: MCP_CONNECT_TIMEOUT_MS };
+
   // True while a chat turn (and its streamed reply) is in progress. Out-of-band
   // messages (reminders, selfdev results) are queued during this window so they
   // don't interrupt or cut off the streaming reply — see enqueueOrSend.
@@ -178,6 +187,14 @@ export class TellboyAgent extends Think<Env> {
     } catch (e) {
       console.error("tellboy: persona load failed (using default)", String(e));
     }
+    // Connect any configured MCP servers (integrations gateway). Fire-and-forget
+    // so a slow/dead server can't stall boot — the per-turn
+    // waitForMcpConnections cap bounds how long a turn waits for the tools, and
+    // connectMcpServers swallows per-server failures internally. A throw here
+    // would retry-loop the DO init, so the whole call is also guarded.
+    void connectMcpServers(this, this.env).catch((e) =>
+      console.error("tellboy: MCP connect failed (swallowed)", String(e)),
+    );
   }
 
   // Read the cached persona/tone. Synchronous so tools and the prompt getter

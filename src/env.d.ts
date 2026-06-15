@@ -72,4 +72,16 @@ interface Env {
    * falsy value ("false"/"0"/"off") to leave voice/audio notes untranscribed.
    */
   ENABLE_VOICE?: string;
+
+  /**
+   * MCP integrations gateway config: a JSON array of `{ name, url, apiKey? }`
+   * naming external MCP servers to connect, whose tools auto-merge into the
+   * model's toolset (see src/plugins/mcp.ts). Presence of a non-empty, valid
+   * array enables the mcp plugin; absence (the default) leaves it off. This is
+   * plain integration config, not a powerful platform credential — any per-server
+   * `apiKey` only authenticates to that third-party MCP endpoint.
+   */
+  MCP_SERVERS?: string;
+  /** Explicit on/off override for the mcp plugin (e.g. "true"/"false"). */
+  ENABLE_MCP?: string;
 }
