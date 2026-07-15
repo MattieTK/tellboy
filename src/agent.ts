@@ -24,6 +24,11 @@ import { getSandbox } from "@cloudflare/sandbox";
 import { collectTools } from "./plugins";
 import { envFlag } from "./plugins/types";
 import { PERSONA_KEY, composePersona } from "./plugins/persona";
+import {
+  LOCATION_KEY,
+  locationPromptSegment,
+  type StoredLocation,
+} from "./plugins/weather";
 import { connectMcpServers, MCP_CONNECT_TIMEOUT_MS } from "./plugins/mcp";
 import type { ReminderPayload } from "./plugins/reminders";
 import type { AutomationPayload } from "./plugins/automations";
@@ -299,6 +304,13 @@ export class TellboyAgent extends Think<Env> {
   // set", which composePersona() turns into the conservative default voice.
   private persona: string | undefined;
 
+  // In-memory cache of the user's saved location, loaded once in onStart so
+  // the synchronous getSystemPrompt() can surface it (so the model knows where
+  // the user is for weather and other location-aware asks) and the weather
+  // tools can read it without a per-turn storage round-trip. `undefined` means
+  // "not set".
+  private location: StoredLocation | undefined;
+
   // The friendly label of the tool currently executing this turn (set in
   // beforeToolCall, cleared in afterToolCall and at turn boundaries). The rich
   // adapter reads it via the `status` provider passed in getMessengers() to show
@@ -351,6 +363,7 @@ export class TellboyAgent extends Think<Env> {
     await super.onStart?.(props);
     try {
       this.persona = await this.ctx.storage.get<string>(PERSONA_KEY);
+      this.location = await this.ctx.storage.get<StoredLocation>(LOCATION_KEY);
     } catch (e) {
       console.error("tellboy: persona load failed (using default)", String(e));
     }
@@ -384,13 +397,34 @@ export class TellboyAgent extends Think<Env> {
     }
   }
 
+  // Read the cached saved location. Synchronous so getSystemPrompt() and the
+  // weather tools can use it without awaiting; the durable value is reloaded
+  // in onStart.
+  getLocation(): StoredLocation | undefined {
+    return this.location;
+  }
+
+  // Durably set (or, with `undefined`, clear) the user's saved location. Writes
+  // to per-thread DO storage and updates the in-memory cache so the next turn's
+  // getSystemPrompt() reflects it immediately. Called from the `set_location`
+  // tool, which runs inside a chat turn (not an alarm), so awaiting the write
+  // here is fine.
+  async setLocation(location: StoredLocation | undefined): Promise<void> {
+    this.location = location;
+    if (location === undefined) {
+      await this.ctx.storage.delete(LOCATION_KEY);
+    } else {
+      await this.ctx.storage.put(LOCATION_KEY, location);
+    }
+  }
+
   getSystemPrompt(): string {
     // Base instructions. Once the `memory` context block (below) accumulates
     // facts, those are layered on top of this prompt. The persona/tone segment
     // is composed from the user's cached choice (or a conservative default when
     // unset) — it rides in the system prompt, not the 2k-token memory block, so
     // it never crowds the memory budget.
-    return [
+    const segments = [
       "You are Tellboy, a personal assistant that talks to one person over Telegram.",
       composePersona(this.persona),
       "Be concise and direct. Prefer short answers; expand only when asked.",
@@ -400,7 +434,10 @@ export class TellboyAgent extends Think<Env> {
       "Your tools are not fixed: when the user asks for a capability you currently lack, you can give yourself that capability by AUTHORING a new plugin, then shipping it the same way you ship any other change. A plugin is a single file, src/plugins/<name>.ts, that exports a Plugin — a `name`, an `isEnabled(env)` check (auto-enable from prerequisites with an ENABLE_<NAME> override via envFlag), and a `tools(agent, env)` function returning AI SDK tools — registered by adding one entry to the REGISTRY array in src/plugins/index.ts (and importing it there). Read src/plugins/reminders.ts as the canonical example and src/plugins/types.ts for the Plugin contract first, and match the existing conventions: env-gated enablement via envFlag, tools that return a clean { error } object instead of throwing, AbortSignal.timeout on any outbound fetch. tests/plugins.test.ts asserts the exact set of enabled plugins and tool names, so if your plugin adds a tool or changes that set, update those expectations in the same change or sandbox verification will fail. Ship with propose_change (it runs pnpm typecheck AND pnpm test in a sandbox before the PR opens, so a malformed plugin never ships), then list_pull_requests and merge_pull_request to deploy. Prefer building a real, tested plugin over telling the user a capability is impossible.",
       "Constraints when authoring a plugin: you may only write inside the source tree — propose_change refuses paths under .github/, deployer/, or .git/, absolute paths, and any path containing '..', so keep changes to src/, tests/, and similar. Do not add a powerful credential (a Cloudflare API token, or a GitHub token with Actions scope) to wrangler.jsonc or env.d.ts; a plugin gates on plain config flags or bindings it already has. Keep beforeTurn-style work cheap and non-blocking, and capture anything a scheduled/alarm callback needs at schedule time — such callbacks must never throw.",
       "If you are unsure or lack information, say so plainly rather than guessing.",
-    ].join(" ");
+    ];
+    const locSegment = locationPromptSegment(this.location);
+    if (locSegment) segments.push(locSegment);
+    return segments.join(" ");
   }
 
   // Tools the model can call this turn. Sourced from the plugin registry

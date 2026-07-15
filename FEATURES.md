@@ -135,6 +135,25 @@ Brave Search, returning title, URL and snippet per result.
   <https://api-dashboard.search.brave.com/>), set on the bot Worker. Force on or
   off with `ENABLE_WEBSEARCH`.
 
+### Weather
+
+Ask for the weather and the bot reports current conditions for your saved
+location — no key, no setup. Tell it where you are once and it remembers; after
+that "what's the weather?" just works. You can also ask about anywhere else by
+name.
+
+- **Try saying:** "I'm in London" (to save it), "What's the weather?", or
+  "What's the weather like in Tokyo?"
+- **How it works:** `set_location` geocodes your place name (via the free,
+  key-less Open-Meteo APIs) and stores it per-chat; `get_weather` then reads the
+  forecast from Open-Meteo. Each chat keeps its own location. The saved place is
+  also surfaced to the model, so it can use it for other location-aware asks
+  without re-asking.
+- **Limits:** every lookup has a 10-second timeout so a slow Open-Meteo response
+  never stalls the chat; if no location is saved and you don't name one, the bot
+  asks you to set one first.
+- **Flag:** `ENABLE_WEATHER`, default on. No credential needed.
+
 ### Integrations via MCP
 
 You can connect external Model Context Protocol (MCP) servers, and their tools
@@ -222,6 +241,7 @@ window, which is useful for debugging.
 | Daily briefings | `ENABLE_BRIEFINGS` | on | Proactive morning brief at a chosen time |
 | Voice transcription | `ENABLE_VOICE` | on | Voice notes transcribed via Workers AI |
 | Web search | `BRAVE_API_KEY` (secret) / `ENABLE_WEBSEARCH` | on when key set | Brave web search with source links |
+| Weather | `ENABLE_WEATHER` | on | Current weather for a saved location (key-less Open-Meteo) |
 | MCP integrations | `MCP_SERVERS` (var) / `ENABLE_MCP` | on when servers set | External MCP server tools auto-merged |
 | Read source / open PRs | `GITHUB_TOKEN` (secret) + `GITHUB_REPO` (var) / `ENABLE_SELFDEV` | on when both set | Read code, propose & manage PRs, self-authored plugins |
 | Request deploy | `DEPLOYER` binding / `ENABLE_DEPLOY` | on when bound | Trigger a production deploy via CI |

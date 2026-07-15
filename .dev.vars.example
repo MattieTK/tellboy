@@ -26,6 +26,10 @@ TELEGRAM_BOT_USERNAME="your_bot"
 BRAVE_API_KEY=""
 # ENABLE_WEBSEARCH="true"   # force on/off regardless of the key
 #
+# weather (current weather via the key-less Open-Meteo APIs): on by default,
+# no key needed. set_location saves a place per-chat; get_weather reads it.
+# ENABLE_WEATHER="false"   # set to disable
+#
 # reminders (alarms via the Agents SDK scheduler): on by default, no key needed.
 # ENABLE_REMINDERS="false"  # set to disable
 #

@@ -16,6 +16,9 @@ interface Env {
   /** Explicit on/off override for the reminders plugin (e.g. "true"/"false"). */
   ENABLE_REMINDERS?: string;
 
+  /** Explicit on/off override for the weather plugin (e.g. "true"/"false"). */
+  ENABLE_WEATHER?: string;
+
   /** GitHub token (contents + PR write) for the selfdev plugin. */
   GITHUB_TOKEN?: string;
   /** Target repo for selfdev, as "owner/name", e.g. "MattieTK/tellboy". */
