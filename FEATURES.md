@@ -268,6 +268,11 @@ the MCP gateway currently supports Bearer-token servers only. Adding Google
 access means solving that login flow first. If you run your own MCP server that
 handles Google auth and exposes a Bearer token, you could connect it today.
 
+A fuller, curated backlog of capability ideas — information retrieval, per-chat
+personal data, Telegram-native interactions, proactive enhancements, and
+self-awareness — lives in [`IDEAS.md`](IDEAS.md). It's a brainstorm, not a
+commitment; each idea notes how it'd be built and any blocker.
+
 **Deliberate non-goals.** tellboy is single-user and Telegram-native by design.
 Multi-channel delivery (Slack, web, SMS) and multi-tenant hosting (one
 deployment serving many people) are not planned — keeping it to one owner on one
