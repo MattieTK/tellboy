@@ -42,15 +42,16 @@ describe("plugin enablement", () => {
         "reminders",
         "selfdev",
         "websearch",
+        "weather",
       ].sort(),
     );
   });
 
   it("keeps the dependency-free plugins on with no config", () => {
-    // automations, briefings, reminders and persona have no external
-    // dependency, so all four default on.
+    // automations, briefings, reminders, persona and weather have no external
+    // dependency, so all default on.
     expect(enabledPluginNames({} as unknown as Env).sort()).toEqual(
-      ["automations", "briefings", "persona", "reminders"].sort(),
+      ["automations", "briefings", "persona", "reminders", "weather"].sort(),
     );
   });
 
@@ -95,6 +96,9 @@ describe("plugin enablement", () => {
     expect(
       enabledPluginNames({ ENABLE_REMINDERS: "false" } as unknown as Env),
     ).not.toContain("reminders");
+    expect(
+      enabledPluginNames({ ENABLE_WEATHER: "false" } as unknown as Env),
+    ).not.toContain("weather");
   });
 });
 
@@ -161,6 +165,8 @@ describe("collectTools", () => {
         "request_deploy",
         "read_logs",
         "set_persona",
+        "set_location",
+        "get_weather",
       ].sort(),
     );
   });
