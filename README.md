@@ -245,3 +245,8 @@ Workers AI calls hit Cloudflare even in local dev and may incur usage charges.
 Reasoning output is hidden from the chat (`sendReasoning = false`) and the model
 runs at `reasoning_effort: "low"` for snappier replies; both are adjustable in
 `src/agent.ts`.
+
+## License
+
+This project is licensed under the MIT License. See the `LICENSE` file for
+details.
