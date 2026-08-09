@@ -15,6 +15,18 @@ export interface McpServerConfig {
   name: string;
   url: string;
   apiKey?: string;
+  /**
+   * Extra request headers, for servers whose auth is not a bearer token.
+   *
+   * The case this exists for is a server sitting behind Cloudflare Access,
+   * which authenticates with `CF-Access-Client-Id` / `CF-Access-Client-Secret`
+   * rather than `Authorization`. Sending those keeps Access enforcing at the
+   * edge instead of the server having to open a hole for us, and the credential
+   * stays revocable from the Zero Trust dashboard.
+   *
+   * Merged under `apiKey`, so a config that sets both still gets its bearer.
+   */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -70,7 +82,25 @@ export function parseMcpServers(raw: string | undefined): McpServerConfig[] | nu
       typeof e.apiKey === "string" && e.apiKey.trim() !== ""
         ? e.apiKey.trim()
         : undefined;
-    servers.push(apiKey ? { name, url, apiKey } : { name, url });
+
+    // Only string values survive: a header whose value is a number or an object
+    // would stringify to something the server cannot use, and silently sending
+    // "[object Object]" as a credential is worse than sending nothing.
+    let headers: Record<string, string> | undefined;
+    if (typeof e.headers === "object" && e.headers !== null && !Array.isArray(e.headers)) {
+      const pairs = Object.entries(e.headers as Record<string, unknown>).filter(
+        (pair): pair is [string, string] =>
+          typeof pair[1] === "string" && pair[1].trim() !== "",
+      );
+      if (pairs.length > 0) headers = Object.fromEntries(pairs);
+    }
+
+    servers.push({
+      name,
+      url,
+      ...(apiKey === undefined ? {} : { apiKey }),
+      ...(headers === undefined ? {} : { headers }),
+    });
   }
   return servers;
 }
@@ -106,13 +136,18 @@ export async function connectMcpServers(
   for (const server of servers) {
     if (existing.has(server.url)) continue;
     try {
+      // `apiKey` last so an explicit Authorization header cannot be clobbered
+      // by a config that also set one in `headers`.
+      const headers: Record<string, string> = {
+        ...(server.headers ?? {}),
+        ...(server.apiKey ? { Authorization: `Bearer ${server.apiKey}` } : {}),
+      };
+
       await agent.addMcpServer(server.name, server.url, {
         // Stable id from the configured name so restores/re-adds dedupe and
         // tool names stay namespaced consistently across boots.
         id: server.name,
-        transport: server.apiKey
-          ? { headers: { Authorization: `Bearer ${server.apiKey}` } }
-          : undefined,
+        transport: Object.keys(headers).length > 0 ? { headers } : undefined,
       });
     } catch (err) {
       // A single bad server must not fail boot — log and keep going so the
