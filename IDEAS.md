@@ -283,11 +283,159 @@ supports.
 
 ---
 
+## WhatsApp — extending to a second channel
+
+A note up front: `FEATURES.md` calls single-channel, Telegram-native delivery a
+deliberate non-goal, and the "Deliberate non-ideas" section below restates that.
+WhatsApp sits right on that line, so it deserves its own honest treatment rather
+than being folded into a blanket "no multi-channel." The framing that keeps it
+in-scope is **one assistant, two front doors for the same owner** — not
+multi-tenant, not many users, and not a generic Slack/web/SMS broadcast layer.
+The owner already talks to the bot on Telegram; WhatsApp would be an alternate
+way to reach *the same* single assistant, with the same per-owner memory and
+personality. That preserves what makes the memory + credential model simple
+(one owner, one brain) while answering the "I live in WhatsApp, not Telegram"
+use case.
+
+Two properties make WhatsApp a better fit than it first looks:
+
+- **The credential is a server Bearer token, not interactive OAuth.** The
+  WhatsApp Business Cloud API authenticates with a permanent access token
+  (a Meta "system user" token), the same shape as `BRAVE_API_KEY` or
+  `GITHUB_TOKEN` — a secret held on the Worker, never model-visible. Nothing
+  here needs the interactive login flow that blocks Gmail/Calendar. So it
+  already clears the credential-boundary bar the rest of this file holds.
+- **It reuses everything.** The tools (reminders, weather, web search, MCP,
+  self-dev) are channel-agnostic; only the *messenger adapter* and the
+  *inbound webhook* are new. The scheduler, `notifyUser`, the per-owner DO
+  storage, and the model turn are all reused as-is.
+
+What follows are three incremental shapes, smallest first, each honest about
+its blocker.
+
+### 17. WhatsApp as an outbound-only channel (small plugin)
+
+The lowest-risk extension: keep Telegram as the only *inbound* channel, but let
+the bot also *push* to your WhatsApp — "send the morning briefing to my
+WhatsApp", "ping me on WhatsApp when this reminder fires", or a per-automation
+`channel: whatsapp` hint. No second inbound path, no second DO, no webhook.
+
+- **Why it fits:** it's the smallest possible answer to "extend for WhatsApp"
+  and it rides entirely on existing plumbing — `notifyUser` already has a
+  "deliver to a known chat id" path; this adds a second delivery target behind
+  the same abstraction. The token is a plain Bearer secret. Nothing about the
+  memory model changes.
+- **How:** plugin exposing a `whatsapp_send` tool (text + optional media) that
+  `POST`s to the Graph API `/{phone_number_id}/messages` with the Bearer token,
+  `AbortSignal.timeout` on the fetch as ever. A `set_whatsapp_number` /
+  `link_whatsapp` step stores the destination number per-owner in DO. The
+  briefing/reminder/automation delivery path gets an optional channel selector
+  that routes to `whatsapp_send` when chosen.
+- **Prereq:** `WHATSAPP_TOKEN` (secret) + `WHATSAPP_PHONE_NUMBER_ID` (var). A
+  verified Meta Business number to send *from*; your personal number to send
+  *to*.
+- **Blocker (real):** the WhatsApp **24-hour customer service window**. Outside
+  24h of your last inbound message to the business number, only pre-approved
+  *template* messages may be sent. So unattended scheduled pushes (an overnight
+  reminder) can't be free-form — they'd need a registered template, or they must
+  land inside the window. This is the single biggest UX wrinkle for a
+  proactive-only channel and should be called out to the owner at setup.
+- **Flag:** `ENABLE_WHATSAPP_SEND`, default on when the token + number id are
+  set.
+
+### 18. WhatsApp as a full second inbound channel (core change)
+
+The bigger extension: the owner can also *talk* to the bot on WhatsApp — text,
+voice notes, photos — and get the same assistant back, same memory, same tools.
+This is the "two front doors" end state.
+
+- **Why it fits:** once #17 has the outbound token and a registered number,
+  inbound is "just" a second webhook entry point that routes to a DO. Workers
+  can host the Meta webhook (the `hub.challenge` verification + event payload)
+  the same way it hosts the Telegram webhook. Voice notes on WhatsApp are
+  common and map cleanly onto the existing `src/voice.ts` Whisper path.
+- **How:** core changes — a WhatsApp webhook handler in `src/index.ts`
+  (verify `hub.verify_token`, echo `hub.challenge` on GET, parse message events
+  on POST) that resolves the sender's number to the owner's DO; a WhatsApp
+  messenger adapter mirroring the Telegram one (`postMessage` → Graph API
+  send, a `stream`/draft equivalent if live typing is wanted). Inbound media
+  (voice, image, document) downloads via the Graph API media endpoint and
+  attaches to the turn the way Telegram media does. Formatting degrades:
+  WhatsApp supports bold/italic/strikethrough/code and (recently) bulleted and
+  numbered lists, but **not** the tables/headings/blockquotes Telegram 10.1
+  Rich Messages render — so the adapter strips/converts the model's richer
+  Markdown to WhatsApp's subset, the way the HTML fallback already downgrades
+  for Telegram.
+- **Prereq:** everything in #17, plus the webhook is publicly reachable
+  (Workers already are) and registered in the Meta App dashboard.
+- **Blocker (real):** the 24h window again — the bot can reply freely only within
+  24h of your last message; after that a reply needs a template. For a chatty
+  single-owner assistant that's usually open, but it must be surfaced honestly,
+  and an automation that fires into a cold window must fall back to a template
+  or skip. Also: a number on the WhatsApp Business API **can't simultaneously**
+  be a normal consumer WhatsApp account — registering it migrates it off the
+  consumer apps, so you typically use a dedicated number.
+- **Flag:** `ENABLE_WHATSAPP`, default on when the token + number id + webhook
+  verify token are set.
+
+### 19. One brain, two channels (shared per-owner state)
+
+Decide — deliberately — whether the Telegram conversation and the WhatsApp
+conversation are *the same* assistant or two assistants that happen to share an
+owner. The recommendation for a single-user bot is **one shared brain**: the
+owner's DO is keyed by owner identity, not by `(channel, chatId)`, so memory,
+persona, lists, habits, location, and conversation history are unified across
+both doors. You switch from Telegram to WhatsApp mid-thread and the bot keeps
+the context.
+
+- **Why it fits:** it's what "one owner, one assistant" actually means, and it
+  avoids the alternative failure mode (two diverging memories that contradict
+  each other). It also keeps the credential and scheduler models unchanged —
+  there's still one DO per owner.
+- **How:** core change to the DO addressing scheme — address by a stable owner
+  id (e.g. a configured `OWNER_ID`, or a hash of the owner's Telegram + WhatsApp
+  numbers set at link time) rather than by `chatId` alone, with each channel's
+  inbound handler resolving to that same DO. `notifyUser` learns which
+  channel(s) the owner is currently active on (or sends to all, deduped).
+- **Trade-off, honestly:** this *does* relax the strict per-chat isolation the
+  Telegram-only model has today — but only across the owner's own two channels,
+  which is the intended behaviour, not a leak. Keep the flag to *split* them
+  (two DOs, separate memories) for an owner who'd rather compartmentalise.
+- **Prereq:** #18 (a working second inbound channel).
+- **Flag:** `ENABLE_SHARED_BRAIN`, default on when more than one inbound channel
+  is enabled; set `false` to keep Telegram and WhatsApp as separate brains.
+
+### Why not a WhatsApp "bridge"
+
+A natural alternative — a bridge (mautrix-whatsapp / Beeper-style) that
+mirrors the WhatsApp multi-device protocol so the bot logs in as *your* number
+on the consumer app — is **blocked on the platform**, and worth saying why so
+it doesn't keep getting re-proposed:
+
+- The multi-device protocol wants a **persistent, stateful websocket** to
+  WhatsApp's servers. Cloudflare Workers are request-scoped (and Durable
+  Objects can hold a WebSocket hibernation, but a third-party protocol's
+  keepalive/reconnect/session-key dance is fragile to host there). It's the
+  same reason the bot reaches the WhatsApp Cloud *REST* API instead of a
+  bridge: REST over Bearer token fits the Worker model; a long-lived client
+  protocol does not.
+- It also needs the owner to scan a QR / link a device, which is an interactive
+  flow the single-user, no-UI bot has nowhere to put.
+
+So the bridge approach is a deliberate non-idea here, not an oversight. The
+Cloud API path (#17–#19) is the route that fits.
+
+---
+
 ## Deliberate non-ideas (kept out of scope)
 
-- **Multi-channel delivery (Slack, web, SMS, email out).** Single-channel,
-  Telegram-native is a design choice, not a limitation; broadening it breaks
-  the simple memory + credential model.
+- **Multi-channel delivery beyond the owner's own channels (Slack, web, SMS,
+  email out, multi-tenant).** Single-channel-by-default is a design choice, not
+  a limitation. The one exception explored above is WhatsApp, as a *second
+  front door for the same single owner* — that keeps the one-owner/one-brain
+  model intact and uses only a server Bearer token, so it clears the
+  credential bar; a general broadcast layer or multi-tenant hosting does not,
+  and stays out.
 - **Multi-tenant hosting.** One deployment, one owner. Listed in
   `FEATURES.md` as a non-goal.
 - **A full GUI / dashboard.** The whole point is you talk to it; a web UI
