@@ -82,7 +82,7 @@ interface TelegramAdapterInternals {
   // adapter; reached through this view so the coupling stays explicit and the
   // whole voice path try/catches into a graceful fallback if one is renamed.
   apiBaseUrl: string;
-  botToken: string;
+  resolveBotToken(): Promise<string>;
   formatConverter: { toAst(text: string): unknown };
   chat: {
     processMessage(
@@ -266,7 +266,8 @@ export class RichTelegramAdapter extends TelegramAdapter {
       { signal: AbortSignal.timeout(VOICE_DOWNLOAD_TIMEOUT_MS) },
     );
     if (!file.file_path) throw new Error("getFile returned no file_path");
-    const url = `${this.internals.apiBaseUrl}/file/bot${this.internals.botToken}/${file.file_path}`;
+    const botToken = await this.internals.resolveBotToken();
+    const url = `${this.internals.apiBaseUrl}/file/bot${botToken}/${file.file_path}`;
     const res = await fetch(url, {
       signal: AbortSignal.timeout(VOICE_DOWNLOAD_TIMEOUT_MS),
     });

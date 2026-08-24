@@ -9,7 +9,7 @@ import {
   type ToolCallContext,
   type ToolCallResultContext,
 } from "@cloudflare/think";
-import { defineMessengers, ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
+import { ThinkMessengerStateAgent } from "@cloudflare/think/messengers";
 import { createCompactFunction, estimateMessageTokens } from "agents/experimental/memory/utils";
 import { createWorkersAI } from "workers-ai-provider";
 import {
@@ -116,14 +116,15 @@ function parseTelegramThread(providerThreadId: string): {
 // These are the load-bearing trade-off of the whole feature, so they are set
 // in one place. Tune them to taste; see the contribution request below for the
 // summarise() implementation that turns the compacted middle into the summary.
-//   The Kimi model has a 262,144-token context window, so we keep history
-//   verbatim far longer than the old 12k threshold (which forced lossy,
-//   tool-heavy summarisation on every short conversation and — because the
+//   The default DeepSeek V4 Flash model has a 1,048,576-token context window,
+//   so we keep history verbatim far longer than the old 12k threshold, which
+//   forced lossy, tool-heavy summarisation on every short conversation and — because the
 //   default char heuristic under-counts tool JSON — kept returning null, so
-//   history was never actually shortened). 150k stays well under the window
-//   while leaving ~110k of headroom for a single between-turns turn to grow
-//   (compaction is only checked between turns). The wide TAIL_TOKEN_BUDGET
-//   guarantees a non-empty middle to summarise so compaction can't no-op.
+//   history was never actually shortened). 150k remains conservative for
+//   latency and cost while leaving ample room for a single between-turns turn
+//   to grow (compaction is only checked between turns). The wide
+//   TAIL_TOKEN_BUDGET guarantees a non-empty middle to summarise so compaction
+//   can't no-op.
 const COMPACT_AFTER_TOKENS = 150_000;
 const PROTECT_HEAD = 2;
 const TAIL_TOKEN_BUDGET = 40_000;
@@ -260,7 +261,7 @@ function toolStatusLabel(toolName: string): string {
 }
 
 export class TellboyAgent extends Think<Env> {
-  // Hide chain-of-thought from the Telegram chat. Kimi is reasoning-capable;
+  // Hide chain-of-thought from Telegram. The configured model can reason;
   // we let it reason internally (see reasoning_effort below) but do not stream
   // those chunks into the conversation, which keeps replies clean. Set as a
   // class field (not in onStart) because Think reads it per turn; flip to true
@@ -954,7 +955,7 @@ export class TellboyAgent extends Think<Env> {
   }
 
   getMessengers() {
-    return defineMessengers({
+    return {
       // richTelegramMessenger is a drop-in for Think's telegramMessenger that
       // delivers Bot API 10.1 Rich Messages on the streamed reply path (native
       // tables/headings/lists from the model's GFM). It degrades to MarkdownV2
@@ -1005,6 +1006,6 @@ export class TellboyAgent extends Think<Env> {
         // to share a single memory across all chats instead.
         // conversation: "thread",
       }),
-    });
+    };
   }
 }

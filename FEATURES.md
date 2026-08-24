@@ -35,8 +35,26 @@ message.
 
 - **Try saying:** "Summarise this in a table" or "Give me a checklist for the
   release."
+- **Model:** `@cf/deepseek-ai/deepseek-v4-flash-0731` by default, with reasoning,
+  function calling and a 1,048,576-token context window. It requires Workers
+  Paid or prepaid AI Gateway credits and can be replaced through `MODEL_ID`.
 - **Flag:** `ENABLE_RICH_MESSAGES`, default on. Set to `false`/`0`/`off` to force
   the plain HTML/MarkdownV2 path.
+
+### Reliability & recovery
+
+The core agent runtime resumes interrupted chat turns and bounds failure loops so
+a deploy, transient Durable Object restart, or memory-limit reset cannot leave a
+conversation retrying forever. Memory-limit recovery has its own small retry
+budget and an alarm-level circuit breaker; Tellboy's 120-second no-output
+watchdog remains the faster backstop for a stalled model or tool.
+
+The upgraded messenger runtime also preserves Telegram attachment identifiers
+when a message is routed into its per-chat agent, so voice notes and other files
+can still be fetched there. Streamed text on either side of a tool call retains
+its word spacing instead of occasionally being joined together.
+
+- **Flag:** none; these protections are part of the core agent runtime.
 
 ### Memory & personality
 
@@ -47,9 +65,9 @@ own when you mention something durable, and you can edit it directly.
 - **Try saying:** "Remember that I prefer short answers", "My company is Acme
   Corp", or "Clear my memory."
 - The bot also compacts long conversations automatically: once a chat passes
-  roughly 12,000 tokens, older messages are summarised into an overlay (the first
-  couple of messages and the most recent stretch are kept verbatim). You don't
-  manage this.
+  roughly 150,000 tokens, older messages are summarised into an overlay (the
+  first couple of messages and the most recent stretch are kept verbatim). You
+  don't manage this.
 - **Flag:** on by default, part of the core agent.
 
 **Personality / tone.** You can set a voice the bot keeps across conversations
@@ -233,7 +251,9 @@ window, which is useful for debugging.
 
 | Capability | Env var / secret | Default | What it unlocks |
 | --- | --- | --- | --- |
+| Chat model | `MODEL_ID` | `@cf/deepseek-ai/deepseek-v4-flash-0731` | Workers AI reasoning and tool-calling model (paid access required) |
 | Chat & rich formatting | `ENABLE_RICH_MESSAGES` | on | Native tables, lists, headings, etc. (falls back to HTML/plain) |
+| Turn recovery & attachment routing | core (no flag) | on | Bounded recovery from interrupted/OOM turns and durable per-chat attachment metadata |
 | Per-chat memory | core (no flag) | on | Durable notes per chat + rolling compaction |
 | Personality / tone | `ENABLE_PERSONA` | on | Persistent voice across conversations |
 | Reminders | `ENABLE_REMINDERS` | on | One-off and recurring nudges |

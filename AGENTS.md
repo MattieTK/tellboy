@@ -101,10 +101,11 @@ informed). They interact — don't remove one in isolation:
   `TAIL_TOKEN_BUDGET`. Without the counter, the default char heuristic
   under-counts tool-heavy history, the protected tail "covers" everything, the
   middle slice is empty, and compaction returns **null** (history never
-  shortened). `COMPACT_AFTER_TOKENS` is 150k (well under Kimi's 262k window);
-  keep it under ~190k so a single between-turns turn can't overflow before the
-  next check. `contextOverflow.reactive` + `classifyChatError` are the backstop
-  if it does.
+  shortened). `COMPACT_AFTER_TOKENS` is 150k. The current default model has a
+  much larger context window, but the threshold also bounds latency, cost and
+  summarisation size; do not raise it without deliberately retesting compaction
+  and between-turn growth. `contextOverflow.reactive` + `classifyChatError` are
+  the overflow backstop.
 - **Capacity errors must retry.** Workers AI throws `AiError 3040` unwrapped, so
   the AI SDK won't retry it. `buildModel()` wraps the model with
   `capacityRetryMiddleware` (match in `isTransientCapacityError`), covering both

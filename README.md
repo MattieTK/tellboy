@@ -5,12 +5,13 @@ Workers. It is built on [`@cloudflare/think`](https://www.npmjs.com/package/@clo
 and uses Think's native Telegram messenger — one Durable Object per chat for
 per-conversation memory, with replies streamed back to Telegram.
 
-The model defaults to `@cf/moonshotai/kimi-k2.6` (Workers AI) and is swappable
-via the `MODEL_ID` variable.
+The model defaults to `@cf/deepseek-ai/deepseek-v4-flash-0731` (Workers AI) and
+is swappable via the `MODEL_ID` variable.
 
 ## Prerequisites
 
-- A Cloudflare account with Workers AI available.
+- A Cloudflare account with Workers Paid or prepaid AI Gateway credits (the
+  default DeepSeek V4 Flash model requires paid access).
 - Node 22.18+ (the webhook script runs TypeScript directly).
 - `pnpm`.
 
@@ -41,7 +42,7 @@ fine to start), and set `TELEGRAM_BOT_USERNAME` to your bot's @username
 
 ```jsonc
 "vars": {
-  "MODEL_ID": "@cf/moonshotai/kimi-k2.6",
+  "MODEL_ID": "@cf/deepseek-ai/deepseek-v4-flash-0731",
   "AI_GATEWAY_ID": "default",
   "TELEGRAM_BOT_USERNAME": "your_bot"
 }
@@ -126,13 +127,15 @@ times out), the turn degrades to a plain "couldn't transcribe" message rather
 than stalling. Set `ENABLE_VOICE` to a falsy value (`false`/`0`/`off`) to leave
 voice notes untranscribed.
 
-### Read its own source and open PRs — `GITHUB_TOKEN` (+ `GITHUB_REPO`)
+### Read and improve its own source — `GITHUB_TOKEN` (+ `GITHUB_REPO`)
 
 The `selfdev` plugin lets the bot read its own code (`read_source`,
-`list_source`) and open pull requests against its own repo (`propose_change`).
-A proposed change is verified in a sandbox container (`pnpm typecheck`) before
-the PR is opened, and PRs are never merged automatically — a human review is
-the gate.
+`list_source`), propose complete file contents (`propose_change`), and manage its
+own pull requests. A background Sandbox run clones the default branch, applies
+the proposed files, and runs a frozen install, `pnpm typecheck`, and `pnpm test`.
+Only a passing change is committed to a fresh `bot/*` branch and opened as a PR.
+The bot can squash-merge only those guarded branches; CI repeats typecheck and
+tests before the merge deploys, so the automated gates remain authoritative.
 
 - **`GITHUB_REPO`** — the repo as `owner/name` (e.g. `MattieTK/tellboy`). A plain
   var in `wrangler.jsonc`, not a secret.
@@ -147,7 +150,7 @@ the gate.
     deploy proxy below.
   - **Lives on:** the bot Worker.
     ```sh
-    echo "<pat>" | pnpm exec wrangler secret put GITHUB_TOKEN
+    pnpm exec wrangler secret put GITHUB_TOKEN
     ```
 
 ### Deploy itself and read its own logs — the control-plane proxy
@@ -241,6 +244,22 @@ Workers AI calls hit Cloudflare even in local dev and may incur usage charges.
   prompt, a writable `memory` context block, and the Telegram messenger
   (webhook path, secret verification, respond-to rules).
 - `scripts/register-webhook.ts` — one-shot `setWebhook` helper.
+
+The runtime baseline is Think 0.16, Agents SDK 0.21, and AI SDK 7. Besides the
+recovery and messenger fixes described in `FEATURES.md`, this makes newer Think
+building blocks available for future plugins: detached sub-agents with progress
+and milestones, durable action approvals/idempotency, allowlisted fetch tools,
+programmatic `runTurn`/`addMessages`, and malformed tool-call repair. These are
+framework APIs, not additional Tellboy tools until explicitly wired into a
+capability.
+
+Agent tracing is enabled at 100% sampling in `wrangler.jsonc`. Think instruments
+turns, model calls, tool runs, approvals and sub-agent work automatically; traces
+appear in Cloudflare's **Agents** and **Workers Observability** views. Message and
+tool payload recording remains off, so Telegram content and tool arguments are
+not copied into trace spans. Lower `head_sampling_rate` from `1` if trace volume
+or observability cost becomes material. See Cloudflare's
+[agent tracing documentation](https://developers.cloudflare.com/agents/runtime/operations/observability/tracing/).
 
 Reasoning output is hidden from the chat (`sendReasoning = false`) and the model
 runs at `reasoning_effort: "low"` for snappier replies; both are adjustable in
