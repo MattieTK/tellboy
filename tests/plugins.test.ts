@@ -41,6 +41,7 @@ describe("plugin enablement", () => {
         "persona",
         "reminders",
         "selfdev",
+        "tictactoe",
         "websearch",
         "weather",
       ].sort(),
@@ -48,10 +49,10 @@ describe("plugin enablement", () => {
   });
 
   it("keeps the dependency-free plugins on with no config", () => {
-    // automations, briefings, reminders, persona and weather have no external
-    // dependency, so all default on.
+    // automations, briefings, reminders, persona, weather and tic-tac-toe
+    // have no external dependency, so all default on.
     expect(enabledPluginNames({} as unknown as Env).sort()).toEqual(
-      ["automations", "briefings", "persona", "reminders", "weather"].sort(),
+      ["automations", "briefings", "persona", "reminders", "tictactoe", "weather"].sort(),
     );
   });
 
@@ -167,6 +168,7 @@ describe("collectTools", () => {
         "set_persona",
         "set_location",
         "get_weather",
+        "play_tic_tac_toe",
       ].sort(),
     );
   });

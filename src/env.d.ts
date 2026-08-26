@@ -23,6 +23,9 @@ interface Env {
   /** Explicit on/off override for the weather plugin (e.g. "true"/"false"). */
   ENABLE_WEATHER?: string;
 
+  /** Explicit on/off override for the tic-tac-toe plugin (e.g. "true"/"false"). */
+  ENABLE_TICTACTOE?: string;
+
   /** GitHub token (contents + PR write) for the selfdev plugin. */
   GITHUB_TOKEN?: string;
   /** Explicit on/off override for the selfdev plugin (e.g. "true"/"false"). */

@@ -29,6 +29,7 @@ import {
   locationPromptSegment,
   type StoredLocation,
 } from "./plugins/weather";
+import { TTT_GAME_KEY, type TicTacToeGame } from "./plugins/tictactoe";
 import { connectMcpServers, MCP_CONNECT_TIMEOUT_MS } from "./plugins/mcp";
 import type { ReminderPayload } from "./plugins/reminders";
 import type { AutomationPayload } from "./plugins/automations";
@@ -256,6 +257,7 @@ function toolStatusLabel(toolName: string): string {
     set_briefing: "🗞️ Setting up your briefing…",
     set_context: "🧠 Noting that for next time…",
     set_persona: "🎭 Updating my tone…",
+    play_tic_tac_toe: "🎮 Playing tic-tac-toe…",
   };
   return labels[toolName] ?? `⚙️ Working on \`${toolName}\`…`;
 }
@@ -419,6 +421,33 @@ export class TellboyAgent extends Think<Env> {
     }
   }
 
+  // Resolve the live Telegram chat target (chat id + optional forum topic) for
+  // a direct Bot API send from within a chat turn — used by plugins that need
+  // to post interactive content (e.g. the tic-tac-toe board with buttons) the
+  // streamed-reply path can't express. Returns undefined when no messenger
+  // context is live (e.g. an alarm callback). Mirrors the chat-id capture the
+  // reminders plugin does, but parsed for a direct send.
+  currentTelegramTarget(): { chatId: string; messageThreadId?: number } | undefined {
+    const thread = this.getMessengerContext()?.thread.providerThreadId;
+    return thread ? parseTelegramThread(thread) : undefined;
+  }
+
+  // The active per-chat tic-tac-toe game, if any (one game at a time per chat).
+  // Stored on the per-thread sub-agent so each chat keeps its own game; the
+  // button-action turn routes to the same sub-agent, so the storage is
+  // consistent between a move played here and the next button tap.
+  async getTicTacToeGame(): Promise<TicTacToeGame | undefined> {
+    return await this.ctx.storage.get<TicTacToeGame>(TTT_GAME_KEY);
+  }
+
+  async setTicTacToeGame(game: TicTacToeGame | undefined): Promise<void> {
+    if (game === undefined) {
+      await this.ctx.storage.delete(TTT_GAME_KEY);
+    } else {
+      await this.ctx.storage.put(TTT_GAME_KEY, game);
+    }
+  }
+
   getSystemPrompt(): string {
     // Base instructions. Once the `memory` context block (below) accumulates
     // facts, those are layered on top of this prompt. The persona/tone segment
@@ -438,6 +467,14 @@ export class TellboyAgent extends Think<Env> {
     ];
     const locSegment = locationPromptSegment(this.location);
     if (locSegment) segments.push(locSegment);
+    segments.push(
+      "You can play tic-tac-toe with the user via the play_tic_tac_toe tool. " +
+        "When the user taps a board button you receive a user message like " +
+        "'Action selected: ttt_move' with a 'Value: N' line; N is the 0-based " +
+        "cell. Respond by calling play_tic_tac_toe with action 'move' and " +
+        "cell=N, then describe the result briefly — do not echo the raw " +
+        "action text.",
+    );
     return segments.join(" ");
   }
 
@@ -991,15 +1028,23 @@ export class TellboyAgent extends Think<Env> {
         path: WEBHOOK_PATH,
 
         // respondTo defaults to ["direct-message", "mention"] — private chats
-        // and @mentions. For a personal 1:1 assistant that is what you want.
+        // and @mentions. For a personal 1:1 assistant that is what you want for
+        // ordinary messages.
         //
-        // To also handle group chats, uncomment the line below to react to
-        // ordinary messages in subscribed threads and to button actions:
+        // "action" is also enabled so tappable inline-keyboard buttons (the
+        // tic-tac-toe board) come back as turns: a button press arrives to the
+        // model as an "Action selected: ttt_move / Value: N" user message, which
+        // it relays to the play_tic_tac_toe tool as a move. No other message
+        // type carries buttons here, so this only affects game play.
+        //
+        // To also handle group chats, add "subscribed-thread" to the array
+        // below to react to ordinary messages in subscribed threads:
         //   respondTo: ["direct-message", "mention", "subscribed-thread", "action"],
         // Caveat: in groups, BotFather privacy mode (on by default) hides
         // non-command, non-mention messages from the bot. Either disable
         // privacy mode in BotFather (/setprivacy -> Disable) so the bot sees
         // all group messages, or rely on @mentions only.
+        respondTo: ["direct-message", "mention", "action"],
 
         // conversation defaults to "thread": one Think sub-agent per Telegram
         // thread, so each chat keeps its own memory. Set conversation: "self"

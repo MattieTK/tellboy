@@ -11,6 +11,7 @@ import { logsPlugin } from "./logs";
 import { personaPlugin } from "./persona";
 import { mcpPlugin } from "./mcp";
 import { weatherPlugin } from "./weather";
+import { tictactoePlugin } from "./tictactoe";
 
 // Register plugins here. Order matters only on tool-name collisions (later
 // wins via the spread below), so keep tool names unique across plugins.
@@ -25,6 +26,7 @@ const REGISTRY: readonly Plugin[] = [
   personaPlugin,
   mcpPlugin,
   weatherPlugin,
+  tictactoePlugin,
 ];
 
 /**

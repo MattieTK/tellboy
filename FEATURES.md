@@ -140,6 +140,24 @@ transcript back so you can catch any mis-hearing before it acts on what you said
   again or type it" reply rather than a stall.
 - **Flag:** `ENABLE_VOICE`, default on.
 
+### Tic-tac-toe
+
+Play tic-tac-toe against the bot right in the chat. The board is rendered as a
+Telegram message with tappable number buttons for each empty cell — no typing
+coordinates. You play ❌ and move first; the bot plays ⭕ with an optimal minimax
+strategy, so it never loses (you can force a draw with perfect play).
+
+- **Try saying:** "Let's play tic-tac-toe", "Play a game of noughts and crosses", or
+  "Start a tic-tac-toe game."
+- **Tool:** `play_tic_tac_toe`. The model starts a game; the bot posts the board
+  with buttons. Tap a number to play that cell — your move comes back as a button
+  action, the bot replies with its move, and the board refreshes with new buttons.
+  When the game ends the buttons are cleared so you can't tap a finished board.
+- **How it works:** each tap is a Telegram callback query the messenger routes back
+  as a turn (the `play_tic_tac_toe` action), so the model applies your move and the
+  bot's reply. One active game per chat.
+- **Flag:** `ENABLE_TICTACTOE`, default on. No credential or setup needed.
+
 ### Web search
 
 Ask for current facts or a source link and the bot searches the public web via
@@ -262,6 +280,7 @@ window, which is useful for debugging.
 | Voice transcription | `ENABLE_VOICE` | on | Voice notes transcribed via Workers AI |
 | Web search | `BRAVE_API_KEY` (secret) / `ENABLE_WEBSEARCH` | on when key set | Brave web search with source links |
 | Weather | `ENABLE_WEATHER` | on | Current weather for a saved location (key-less Open-Meteo) |
+| Tic-tac-toe | `ENABLE_TICTACTOE` | on | Play tic-tac-toe via tappable Telegram buttons |
 | MCP integrations | `MCP_SERVERS` (var) / `ENABLE_MCP` | on when servers set | External MCP server tools auto-merged |
 | Read source / open PRs | `GITHUB_TOKEN` (secret) + `GITHUB_REPO` (var) / `ENABLE_SELFDEV` | on when both set | Read code, propose & manage PRs, self-authored plugins |
 | Request deploy | `DEPLOYER` binding / `ENABLE_DEPLOY` | on when bound | Trigger a production deploy via CI |
