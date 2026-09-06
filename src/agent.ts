@@ -76,6 +76,12 @@ function shellQuote(s: string): string {
 // used to deliver proactive messages (reminders, selfdev results).
 const TG_CHAT_KEY = "tg_chat_id";
 
+// Durable-storage key for the timestamp of the last inbound turn. Used to
+// detect a session gap (see SESSION_GAP_MS): when the user comes back after a
+// long pause, the conversation is explicitly re-framed as a new session in the
+// system prompt instead of silently continuing the old one.
+const LAST_TURN_KEY = "last_turn_at";
+
 // The messenger encodes Telegram thread ids as "telegram:<chatId>[:<topicId>]"
 // (see @chat-adapter/telegram encodeThreadId). Parse out the real chat id (and
 // forum topic) for direct Bot API sends — using the raw value as chat_id gets
@@ -117,9 +123,9 @@ function parseTelegramThread(providerThreadId: string): {
 // These are the load-bearing trade-off of the whole feature, so they are set
 // in one place. Tune them to taste; see the contribution request below for the
 // summarise() implementation that turns the compacted middle into the summary.
-//   The default DeepSeek V4 Flash model has a 1,048,576-token context window,
-//   so we keep history verbatim far longer than the old 12k threshold, which
-//   forced lossy, tool-heavy summarisation on every short conversation and — because the
+//   The default model has a 1,048,576-token context window, so we keep history
+//   verbatim far longer than the old 12k threshold, which forced lossy,
+//   tool-heavy summarisation on every short conversation and — because the
 //   default char heuristic under-counts tool JSON — kept returning null, so
 //   history was never actually shortened). 150k remains conservative for
 //   latency and cost while leaving ample room for a single between-turns turn
@@ -129,6 +135,23 @@ function parseTelegramThread(providerThreadId: string): {
 const COMPACT_AFTER_TOKENS = 150_000;
 const PROTECT_HEAD = 2;
 const TAIL_TOKEN_BUDGET = 40_000;
+
+// --- Session gaps ---------------------------------------------------------
+//
+// Back-and-forth conversation over minutes/hours is ONE context: the model
+// keeps the thread. But a message after a long pause (overnight, next morning,
+// after the weekend) is a NEW session: the prior exchange's framing — and
+// especially its implicit "now" — must not leak into it. The failure this
+// fixes: "remind me tomorrow morning" sent just after midnight resolved
+// against a stale in-context date and scheduled the reminder two days out.
+//
+// SESSION_GAP_MS is the threshold: below it the conversation continues as-is;
+// at or above it, beforeTurn() injects a NEW SESSION block into the system
+// prompt stating when the previous conversation ended and instructing the
+// model to treat this as fresh context and re-anchor all dates to the current
+// timestamp. 4h separates "an afternoon of chat" from "came back later/next
+// day" without firing on a long lunch break.
+const SESSION_GAP_MS = 4 * 60 * 60 * 1000;
 
 // Stall watchdog. Think leaves this at 0 (disabled) by default, which is why a
 // hung or over-capacity model call left the user on a dead typing indicator
@@ -320,6 +343,14 @@ export class TellboyAgent extends Think<Env> {
   // a transient "doing X…" draft during tool gaps. `null` means no active tool.
   private toolStatus: string | null = null;
 
+  // Timestamp (epoch ms) of the previous inbound turn, cached in memory and
+  // persisted to storage (LAST_TURN_KEY). Used by beforeTurn() to detect a
+  // session gap (SESSION_GAP_MS) and re-frame the conversation as a new
+  // session. `undefined` means "unknown" — first ever turn, or a DO evicted
+  // since the last message before onStart reloaded it — which beforeTurn()
+  // treats conservatively as a gap (fresh framing can only help there).
+  private lastTurnAt: number | undefined;
+
   getModel(): LanguageModel {
     // sessionAffinity is a stable key so a conversation's turns hit the same
     // backend replica and benefit from prefix caching. reasoning_effort "low"
@@ -367,6 +398,10 @@ export class TellboyAgent extends Think<Env> {
     try {
       this.persona = await this.ctx.storage.get<string>(PERSONA_KEY);
       this.location = await this.ctx.storage.get<StoredLocation>(LOCATION_KEY);
+      // Reload the previous turn's timestamp so session-gap detection survives
+      // DO eviction. If this read fails the cache stays `undefined`, which
+      // beforeTurn() treats as a gap — safe degradation.
+      this.lastTurnAt = await this.ctx.storage.get<number>(LAST_TURN_KEY);
     } catch (e) {
       console.error("tellboy: persona load failed (using default)", String(e));
     }
@@ -383,7 +418,7 @@ export class TellboyAgent extends Think<Env> {
   // Read the cached persona/tone. Synchronous so tools and the prompt getter
   // can use it without awaiting.
   getPersona(): string | undefined {
-    return this.persona;
+  return this.persona;
   }
 
   // Durably set (or, with `undefined`, clear) the user's persona/tone. Writes
@@ -517,7 +552,60 @@ export class TellboyAgent extends Think<Env> {
       console.error("tellboy: beforeTurn capture error", e);
     }
 
-    return { system: `${ctx.system}\n\nCurrent time (UTC): ${new Date().toISOString()}.` };
+    // --- Session-gap detection + date anchor -----------------------------
+    //
+    // Both jobs need the CURRENT wall clock and must never block the reply, so
+    // they run synchronously off the in-memory lastTurnAt cache (persisted
+    // fire-and-forget below, reloaded in onStart). The gap is measured from the
+    // previous INBOUND turn — i.e. the last time the user actually spoke — so
+    // reminder/automation callbacks firing overnight don't mask a real gap.
+    const now = Date.now();
+    const previous = this.lastTurnAt;
+    const gapMs = previous === undefined ? undefined : now - previous;
+    // Persist for the next turn (and for DO eviction). Fire-and-forget: an
+    // awaited write here stalls the reply stream and trips the stall watchdog.
+    this.lastTurnAt = now;
+    void this.ctx.storage
+      .put(LAST_TURN_KEY, now)
+      .catch((e) => console.error("tellboy: last-turn persist failed", e));
+
+    const nowDate = new Date(now);
+    // Weekday + full timestamp: the model resolves "tomorrow", "this
+    // morning", "next Friday" against THIS, never against dates it infers
+    // from the conversation history (the two-days-out scheduling bug).
+    const timeSegment =
+      `Current time (UTC): ${nowDate.toISOString()} ` +
+      `(${nowDate.toUTCString().slice(0, 3)}day). ` +
+      "All date arithmetic — every relative date like 'today', 'tomorrow', " +
+      "'this morning', 'next week' — MUST be resolved against this timestamp, " +
+      "never against dates mentioned earlier in the conversation.";
+
+    // A long pause (overnight, next morning, after the weekend) means the
+    // prior exchange's framing no longer applies: say so explicitly. An
+    // unknown previous turn (first message, or DO evicted before onStart
+    // reloaded the timestamp) is treated as a gap too — fresh framing can only
+    // help there.
+    if (gapMs === undefined || gapMs >= SESSION_GAP_MS) {
+      const hoursAgo =
+        gapMs === undefined
+          ? "an unknown time"
+          : `${Math.round(gapMs / 3_600_000)}h ago`;
+      const prevIso = previous === undefined ? "unknown" : new Date(previous).toISOString();
+      const sessionSegment =
+        `NEW SESSION: the previous conversation in this thread ended ` +
+        `${prevIso} (${hoursAgo}), and this message arrives after a long ` +
+        "pause. Treat this as fresh context: do not carry over assumptions, " +
+        "tasks, or in-flight plans from the earlier exchange unless the user " +
+        "references them. Re-anchor all dates and times to the current " +
+        "timestamp above. If the user's message only makes sense with " +
+        "earlier context, briefly restate what you understood and confirm, " +
+        "rather than silently assuming.";
+      return {
+        system: `${ctx.system}\n\n${timeSegment}\n\n${sessionSegment}`,
+      };
+    }
+
+    return { system: `${ctx.system}\n\n${timeSegment}` };
   }
 
   // Turn (and its streamed reply) is done: release the queue so any deferred
