@@ -38,6 +38,7 @@ describe("plugin enablement", () => {
         "briefings",
         "deploy",
         "logs",
+        "memory",
         "persona",
         "reminders",
         "selfdev",
@@ -49,10 +50,10 @@ describe("plugin enablement", () => {
   });
 
   it("keeps the dependency-free plugins on with no config", () => {
-    // automations, briefings, reminders, persona, weather and tic-tac-toe
-    // have no external dependency, so all default on.
+    // automations, briefings, memory, reminders, persona, weather and
+    // tic-tac-toe have no external dependency, so all default on.
     expect(enabledPluginNames({} as unknown as Env).sort()).toEqual(
-      ["automations", "briefings", "persona", "reminders", "tictactoe", "weather"].sort(),
+      ["automations", "briefings", "memory", "persona", "reminders", "tictactoe", "weather"].sort(),
     );
   });
 
@@ -100,6 +101,9 @@ describe("plugin enablement", () => {
     expect(
       enabledPluginNames({ ENABLE_WEATHER: "false" } as unknown as Env),
     ).not.toContain("weather");
+    expect(
+      enabledPluginNames({ ENABLE_MEMORY: "false" } as unknown as Env),
+    ).not.toContain("memory");
   });
 });
 
@@ -169,6 +173,10 @@ describe("collectTools", () => {
         "set_location",
         "get_weather",
         "play_tic_tac_toe",
+        "set_memory",
+        "list_memories",
+        "recall_memory",
+        "forget_memory",
       ].sort(),
     );
   });

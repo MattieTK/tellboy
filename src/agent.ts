@@ -31,6 +31,7 @@ import {
 } from "./plugins/weather";
 import { TTT_GAME_KEY, type TicTacToeGame } from "./plugins/tictactoe";
 import { connectMcpServers, MCP_CONNECT_TIMEOUT_MS } from "./plugins/mcp";
+import { MEMORY_PREFIX, type MemoryScopeEntry } from "./plugins/memory";
 import type { ReminderPayload } from "./plugins/reminders";
 import type { AutomationPayload } from "./plugins/automations";
 import type { BriefingPayload } from "./plugins/briefings";
@@ -279,6 +280,10 @@ function toolStatusLabel(toolName: string): string {
     list_automations: "🤖 Checking your automations…",
     set_briefing: "🗞️ Setting up your briefing…",
     set_context: "🧠 Noting that for next time…",
+    set_memory: "🧠 Saving that to memory…",
+    list_memories: "🧠 Checking what I remember…",
+    recall_memory: "🧠 Recalling the details…",
+    forget_memory: "🧠 Forgetting that…",
     set_persona: "🎭 Updating my tone…",
     play_tic_tac_toe: "🎮 Playing tic-tac-toe…",
   };
@@ -456,6 +461,41 @@ export class TellboyAgent extends Think<Env> {
     }
   }
 
+  // --- Scoped memory (see plugins/memory.ts) -----------------------------
+  //
+  // Storage accessors for categorised, just-in-time memory scopes. Kept as
+  // public agent methods (like setPersona/setLocation) rather than the plugin
+  // touching ctx directly, so storage stays behind one owner.
+
+  // All memory scopes, keyed by scope name. Errors are swallowed and returned
+  // as an empty map: a failed read must not take down the calling tool turn.
+  async listMemoryScopes(): Promise<Record<string, MemoryScopeEntry>> {
+    const out: Record<string, MemoryScopeEntry> = {};
+    try {
+      const list = await this.ctx.storage.list<MemoryScopeEntry>({
+        prefix: MEMORY_PREFIX,
+      });
+      for (const [key, value] of list) {
+        if (value) out[key.slice(MEMORY_PREFIX.length)] = value;
+      }
+    } catch (e) {
+      console.error("tellboy: memory scope list failed", String(e));
+    }
+    return out;
+  }
+
+  async getMemoryScope(scope: string): Promise<MemoryScopeEntry | undefined> {
+    return await this.ctx.storage.get<MemoryScopeEntry>(`${MEMORY_PREFIX}${scope}`);
+  }
+
+  async setMemoryScope(scope: string, entry: MemoryScopeEntry): Promise<void> {
+    await this.ctx.storage.put(`${MEMORY_PREFIX}${scope}`, entry);
+  }
+
+  async deleteMemoryScope(scope: string): Promise<void> {
+    await this.ctx.storage.delete(`${MEMORY_PREFIX}${scope}`);
+  }
+
   // Resolve the live Telegram chat target (chat id + optional forum topic) for
   // a direct Bot API send from within a chat turn — used by plugins that need
   // to post interactive content (e.g. the tic-tac-toe board with buttons) the
@@ -494,7 +534,7 @@ export class TellboyAgent extends Think<Env> {
       composePersona(this.persona),
       "Be concise and direct. Prefer short answers; expand only when asked.",
       "Always present replies as well-structured Telegram Rich Messages — Markdown renders natively, so use the full GitHub-Flavored Markdown vocabulary by default instead of plain prose. Structure every non-trivial answer with the richest fitting layout: ## headings to separate sections, GFM | tables | for any comparison, set of options, or attribute/value data, bullet or numbered lists (nested for sub-points) for steps and collections, > blockquotes to set off quoted or key text, `inline code` and ```fenced blocks``` for code, paths and commands, ||spoilers|| for surprises, and --- dividers between major sections. Default to a heading/table/list structure whenever the content has any structure to it, and prefer that over a wall of text. Only a genuinely trivial reply — a yes/no or a single value — should be left plain.",
-      "When the user shares a durable fact about themselves (preferences, names, ongoing projects, recurring tasks), remember it in your memory so future replies stay consistent.",
+      "You have two memory tiers. (1) The always-injected `memory` block (edit via set_context): small, core facts about the user that are worth having in EVERY conversation — preferences, name, standing context. (2) Scoped topic memory (set_memory / list_memories / recall_memory): details that only matter when a topic comes up, stored per topic scope (e.g. 'moving-house', 'work', 'football'). When you learn topic-specific facts, save them with set_memory into the most specific scope the topic implies, reusing an existing scope rather than near-duplicates. When a user message touches a topic that might have saved context, call list_memories (cheap — names and labels only) and recall_memory the relevant scope BEFORE answering, so you answer with the remembered details instead of asking the user to repeat themselves. If a scope looks relevant but you are unsure, recall it — a recalled scope only costs context for this reply.",
       "You can inspect, improve, and ship your own code. Use read_source/list_source to read your source; propose_change to open a pull request with a fix or improvement (it is verified by typecheck and tests in a sandbox before the PR opens); list_pull_requests to see your open proposals; and merge_pull_request to merge one of your own once it's ready (merging deploys it). When asked to fix or improve yourself, use these tools rather than claiming you cannot modify your own code.",
       "Your tools are not fixed: when the user asks for a capability you currently lack, you can give yourself that capability by AUTHORING a new plugin, then shipping it the same way you ship any other change. A plugin is a single file, src/plugins/<name>.ts, that exports a Plugin — a `name`, an `isEnabled(env)` check (auto-enable from prerequisites with an ENABLE_<NAME> override via envFlag), and a `tools(agent, env)` function returning AI SDK tools — registered by adding one entry to the REGISTRY array in src/plugins/index.ts (and importing it there). Read src/plugins/reminders.ts as the canonical example and src/plugins/types.ts for the Plugin contract first, and match the existing conventions: env-gated enablement via envFlag, tools that return a clean { error } object instead of throwing, AbortSignal.timeout on any outbound fetch. tests/plugins.test.ts asserts the exact set of enabled plugins and tool names, so if your plugin adds a tool or changes that set, update those expectations in the same change or sandbox verification will fail. Ship with propose_change (it runs pnpm typecheck AND pnpm test in a sandbox before the PR opens, so a malformed plugin never ships), then list_pull_requests and merge_pull_request to deploy. Prefer building a real, tested plugin over telling the user a capability is impossible.",
       "Constraints when authoring a plugin: you may only write inside the source tree — propose_change refuses paths under .github/, deployer/, or .git/, absolute paths, and any path containing '..', so keep changes to src/, tests/, and similar. Do not add a powerful credential (a Cloudflare API token, or a GitHub token with Actions scope) to wrangler.jsonc or env.d.ts; a plugin gates on plain config flags or bindings it already has. Keep beforeTurn-style work cheap and non-blocking, and capture anything a scheduled/alarm callback needs at schedule time — such callbacks must never throw.",
@@ -599,7 +639,8 @@ export class TellboyAgent extends Think<Env> {
         "references them. Re-anchor all dates and times to the current " +
         "timestamp above. If the user's message only makes sense with " +
         "earlier context, briefly restate what you understood and confirm, " +
-        "rather than silently assuming.";
+        "rather than silently assuming. Consider list_memories to check for " +
+        "saved topic context that would make the message make sense.";
       return {
         system: `${ctx.system}\n\n${timeSegment}\n\n${sessionSegment}`,
       };
@@ -655,6 +696,9 @@ export class TellboyAgent extends Think<Env> {
     //   Tier 3 — recent window: the framework already replays only the last
     //            few messages at full fidelity (read-time truncation), and
     //            TAIL_TOKEN_BUDGET protects the recent span from compaction.
+    //   Tier 4 (just-in-time) — scoped topic memory via plugins/memory.ts:
+    //            recalled into context on demand by recall_memory, so topic
+    //            detail costs nothing until it is relevant.
     //
     // withCachedPrompt() marks the system prompt + context blocks as cacheable
     // for prefix-cache reuse across turns.
