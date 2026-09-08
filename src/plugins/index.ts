@@ -12,6 +12,7 @@ import { personaPlugin } from "./persona";
 import { mcpPlugin } from "./mcp";
 import { weatherPlugin } from "./weather";
 import { tictactoePlugin } from "./tictactoe";
+import { memoryPlugin } from "./memory";
 
 // Register plugins here. Order matters only on tool-name collisions (later
 // wins via the spread below), so keep tool names unique across plugins.
@@ -27,6 +28,7 @@ const REGISTRY: readonly Plugin[] = [
   mcpPlugin,
   weatherPlugin,
   tictactoePlugin,
+  memoryPlugin,
 ];
 
 /**
